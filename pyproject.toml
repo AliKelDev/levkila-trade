@@ -1,0 +1,12 @@
+[project]
+name = "deeptrade"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "ccxt>=4.5.14",
+    "pandas>=2.3.3",
+    "pandas-ta>=0.4.71b0",
+    "cryptography>=44.0.0",
+]
