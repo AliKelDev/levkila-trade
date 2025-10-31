@@ -6,9 +6,10 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import ccxt
+from ccxt.base.errors import ExchangeError
 import pandas as pd
 import pandas_ta as ta
 import requests
@@ -25,8 +26,17 @@ STATE_PATH = Path("bot_state.json")
 DEFAULT_SLEEP = 1.5
 MAX_DEEPSEEK_RETRIES = 3
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_MODEL = "deepseek-reasoner"
+
+# Give the reasoner ample room; it often spends hundreds of tokens on CoT
+DEEPSEEK_MAX_TOKENS = 8192
+DEEPSEEK_TIMEOUT = 300  # seconds
 
 load_dotenv()
+
+# --- Runtime Logging ---
+LOG_BUFFER: List[Dict[str, Any]] = []
+
 
 # --- Data Classes ---
 @dataclass
@@ -34,12 +44,48 @@ class DeepSeekResponse:
     raw_text: str
     decisions: Dict[str, Any]
     chain_of_thought: Optional[str]
+    final_content: str
+    summary: Optional[str]
+
+
+@dataclass
+class RunCycleResult:
+    user_prompt: str
+    system_prompt: str
+    llm_raw: str
+    chain_of_thought: Optional[str]
+    decisions: Dict[str, Any]
+    final_content: str
+    summary: Optional[str]
+    account_prompt_before: str
+    account_prompt_after: str
+    positions_before: Dict[str, Dict[str, Any]]
+    positions_after: Dict[str, Dict[str, Any]]
+    balances_before: Dict[str, Any]
+    balances_after: Dict[str, Any]
+    logs: List[Dict[str, Any]]
+    minutes_since_start: int
+    invocation_count: int
+    run_timestamp: str
 
 
 # --- Utility Helpers ---
 def log_section(title: str, content: str) -> None:
+    entry = {
+        "title": title,
+        "content": content,
+        "ts": time.time(),
+    }
+    LOG_BUFFER.append(entry)
     print(f"\n===== {title} =====")
     print(content)
+
+
+def consume_logs() -> List[Dict[str, Any]]:
+    global LOG_BUFFER
+    logs = LOG_BUFFER[:]
+    LOG_BUFFER = []
+    return logs
 
 
 def load_state() -> Dict[str, Any]:
@@ -78,6 +124,10 @@ def extract_json_block(text: str) -> Dict[str, Any]:
             candidate = match.group(0)
             return json.loads(candidate)
         raise
+
+
+def extract_decision_json(final_content: str) -> Dict[str, Any]:
+    return extract_json_block(final_content)
 
 
 def set_leverage(exchange: ccxt.Exchange, symbol: str, leverage: int, state: Dict[str, Any]) -> None:
@@ -127,6 +177,15 @@ def build_market_prompt(exchange: ccxt.Exchange) -> str:
     master_prompt = "CURRENT MARKET STATE FOR ALL COINS\n"
     master_prompt += "ALL OF THE PRICE OR SIGNAL DATA BELOW IS ORDERED: OLDEST → NEWEST\n\n"
 
+    public_derivatives = getattr(build_market_prompt, "_public_derivatives", None)
+    if public_derivatives is None:
+        public_derivatives = ccxt.binance({"options": {"defaultType": "future"}})
+        try:
+            public_derivatives.load_markets()
+        except Exception as exc:  # noqa: BLE001
+            log_section("WARNING", f"Failed to load mainnet markets for derivatives data: {exc}")
+        build_market_prompt._public_derivatives = public_derivatives
+
     for symbol in COINS:
         coin = symbol_to_coin(symbol)
         try:
@@ -138,6 +197,30 @@ def build_market_prompt(exchange: ccxt.Exchange) -> str:
 
         if intraday_df.empty or longterm_df.empty:
             continue
+
+        open_interest_latest = None
+        open_interest_avg = None
+        funding_rate = None
+        if public_derivatives:
+            if hasattr(public_derivatives, "fetch_open_interest_history"):
+                try:
+                    oi_history = public_derivatives.fetch_open_interest_history(symbol, limit=10)
+                    amounts = [
+                        float(entry.get("openInterestAmount") or entry.get("openInterestValue") or 0)
+                        for entry in oi_history or []
+                        if entry
+                    ]
+                    if amounts:
+                        open_interest_latest = amounts[-1]
+                        open_interest_avg = sum(amounts) / len(amounts)
+                except Exception as exc:  # noqa: BLE001
+                    public_derivatives = None
+            if public_derivatives:
+                try:
+                    funding_info = public_derivatives.fetch_funding_rate(symbol)
+                    funding_rate = funding_info.get("fundingRate")
+                except Exception as exc:  # noqa: BLE001
+                    public_derivatives = None
 
         for df in (intraday_df, longterm_df):
             df.ta.ema(length=20, append=True)
@@ -163,6 +246,18 @@ def build_market_prompt(exchange: ccxt.Exchange) -> str:
             macd=latest_intraday["MACDh_12_26_9"],
             rsi7=latest_intraday["RSI_7"],
         )
+
+        if open_interest_latest is not None:
+            if open_interest_avg is not None:
+                coin_prompt += (
+                    f"Open Interest: Latest: {open_interest_latest:.5f} "
+                    f"Average: {open_interest_avg:.5f}\n"
+                )
+            else:
+                coin_prompt += f"Open Interest: Latest: {open_interest_latest:.5f}\n"
+        if funding_rate is not None:
+            coin_prompt += f"Funding Rate: {funding_rate}\n"
+
         coin_prompt += "Intraday series (by minute, oldest → latest):\n"
         coin_prompt += f"Mid prices: {intraday_series['close'].tolist()}\n"
         coin_prompt += "EMA indicators (20‑period): {ema}\n".format(
@@ -284,13 +379,12 @@ class DeepSeekClient:
 
     def request(self, system_prompt: str, user_prompt: str) -> DeepSeekResponse:
         payload = {
-            "model": "deepseek-chat",
+            "model": DEEPSEEK_MODEL,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
+            "max_tokens": DEEPSEEK_MAX_TOKENS,
         }
 
         headers = {
@@ -306,7 +400,7 @@ class DeepSeekClient:
                     DEEPSEEK_URL,
                     headers=headers,
                     data=json.dumps(payload),
-                    timeout=60,
+                    timeout=DEEPSEEK_TIMEOUT,
                 )
                 if response.status_code >= 500:
                     last_error = f"Server error {response.status_code}: {response.text}"
@@ -317,18 +411,30 @@ class DeepSeekClient:
                     continue
                 response.raise_for_status()
                 body = response.json()
-                content = body["choices"][0]["message"]["content"]
-                chain = None
-                if "<chain_of_thought>" in content:
-                    chain_match = re.search(
-                        r"<chain_of_thought>(.*?)</chain_of_thought>",
-                        content,
-                        re.DOTALL,
+                message = body["choices"][0]["message"]
+                final_content = message.get("content", "")
+                chain = message.get("reasoning_content")
+
+                try:
+                    decisions = extract_decision_json(final_content)
+                except json.JSONDecodeError as parse_error:
+                    snippet = final_content[:200]
+                    log_section(
+                        "LLM",
+                        (
+                            "Failed to parse JSON from DeepSeek response. "
+                            f"Error: {parse_error}. Snippet: {snippet!r}"
+                        ),
                     )
-                    if chain_match:
-                        chain = chain_match.group(1).strip()
-                decisions = extract_json_block(content)
-                return DeepSeekResponse(raw_text=content, decisions=decisions, chain_of_thought=chain)
+                    raise
+
+                return DeepSeekResponse(
+                    raw_text=final_content,
+                    decisions=decisions,
+                    chain_of_thought=chain,
+                    final_content=final_content,
+                    summary=None,
+                )
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
                 log_section("LLM", f"DeepSeek attempt {attempt} failed: {exc}")
@@ -410,20 +516,27 @@ def send_market_order(
     symbol: str,
     side: str,
     amount: float,
-) -> Dict[str, Any]:
-    order = exchange.create_order(
-        symbol,
-        "market",
-        side,
-        amount,
-        None,
-        {
-            "reduceOnly": False,
-            "newOrderRespType": "RESULT",
-        },
-    )
-    log_section("ORDERS", f"Executed market order {order.get('id')} on {symbol}")
-    return order
+) -> Optional[Dict[str, Any]]:
+    try:
+        order = exchange.create_order(
+            symbol,
+            "market",
+            side,
+            amount,
+            None,
+            {
+                "reduceOnly": False,
+                "newOrderRespType": "RESULT",
+            },
+        )
+        log_section("ORDERS", f"Executed market order {order.get('id')} on {symbol}")
+        return order
+    except ExchangeError as exc:
+        message = str(exc)
+        if "Margin is insufficient" in message:
+            log_section("ERROR", f"Entry rejected for {symbol}: {message}")
+            return None
+        raise
 
 
 def close_position(
@@ -435,19 +548,26 @@ def close_position(
         return None
     side = "sell" if contracts > 0 else "buy"
     amount = abs(contracts)
-    order = exchange.create_order(
-        symbol,
-        "market",
-        side,
-        amount,
-        None,
-        {
-            "reduceOnly": True,
-            "newOrderRespType": "RESULT",
-        },
-    )
-    log_section("ORDERS", f"Closed position with order {order.get('id')} on {symbol}")
-    return order
+    try:
+        order = exchange.create_order(
+            symbol,
+            "market",
+            side,
+            amount,
+            None,
+            {
+                "reduceOnly": True,
+                "newOrderRespType": "RESULT",
+            },
+        )
+        log_section("ORDERS", f"Closed position with order {order.get('id')} on {symbol}")
+        return order
+    except ExchangeError as exc:
+        message = str(exc)
+        if "ReduceOnly Order is rejected" in message:
+            log_section("INFO", f"Close request ignored for {symbol}: {message}")
+            return None
+        raise
 
 
 # --- Decision Processing ---
@@ -455,9 +575,11 @@ def process_decisions(
     exchange: ccxt.Exchange,
     decisions: Dict[str, Any],
     positions_map: Dict[str, Dict[str, Any]],
+    balances: Dict[str, Any],
     state: Dict[str, Any],
 ) -> None:
     state_positions = state.setdefault("positions", {})
+    available_cash = float(balances.get("available_cash", 0))
 
     for coin_key, payload in decisions.items():
         coin = coin_key.upper()
@@ -528,7 +650,20 @@ def process_decisions(
                 continue
 
             order_side = "buy" if side == "long" else "sell"
+            required_margin = notional / leverage if leverage else notional
+            if required_margin > available_cash:
+                log_section(
+                    "WARNING",
+                    (
+                        f"Insufficient margin for {coin}: required {required_margin:.2f} "
+                        f"but available {available_cash:.2f}"
+                    ),
+                )
+                continue
+
             entry_order = send_market_order(exchange, symbol, order_side, amount)
+            if not entry_order:
+                continue
             entry_price = float(entry_order.get("average") or entry_order.get("price") or price)
 
             bracket = place_bracket_orders(exchange, symbol, side, amount, stop_loss, target)
@@ -546,6 +681,7 @@ def process_decisions(
                 "entry_price": entry_price,
                 "side": side,
             }
+            available_cash -= required_margin
             continue
 
         log_section("WARNING", f"Unhandled signal {signal} for {coin}")
@@ -576,60 +712,135 @@ def build_exchange() -> ccxt.Exchange:
     return exchange
 
 
-def main() -> None:
+def run_cycle() -> RunCycleResult:
+    consume_logs()
     state = load_state()
     exchange = build_exchange()
 
-    current_time = pd.Timestamp.utcnow()
-    start_timestamp = state.get("start_timestamp")
-    if not start_timestamp:
-        start_timestamp = current_time.isoformat()
-        state["start_timestamp"] = start_timestamp
+    try:
+        current_time = pd.Timestamp.utcnow()
+        start_timestamp = state.get("start_timestamp")
+        if not start_timestamp:
+            start_timestamp = current_time.isoformat()
+            state["start_timestamp"] = start_timestamp
 
-    # Compute run metadata for prompt context
-    minutes_since_start = int(
-        max(
-            0,
-            (current_time - pd.Timestamp(start_timestamp)).total_seconds(),
+        minutes_since_start = int(
+            max(
+                0,
+                (current_time - pd.Timestamp(start_timestamp)).total_seconds(),
+            )
+            // 60
         )
-        // 60
-    )
-    invocation_count = int(state.get("invocation_count", 0)) + 1
-    state["invocation_count"] = invocation_count
+        invocation_count = int(state.get("invocation_count", 0)) + 1
+        state["invocation_count"] = invocation_count
 
-    system_prompt = load_system_prompt()
-    market_prompt = build_market_prompt(exchange)
-    account_prompt, positions_map, balances = build_account_prompt(exchange, state)
+        system_prompt = load_system_prompt()
+        market_prompt = build_market_prompt(exchange)
+        account_prompt_before, positions_before, balances_before = build_account_prompt(exchange, state)
 
-    user_prompt = (
-        "It has been {minutes} minutes since you started trading. "
-        "The current time is {now} and you've been invoked {count} times. "
-        "Below, we are providing you with a variety of state data, price data, and "
-        "predictive signals so you can discover alpha. Below that is your current "
-        "account information, value, performance, positions, etc.\n\n"
-    ).format(minutes=minutes_since_start, now=current_time, count=invocation_count)
-    user_prompt += "ALL OF THE PRICE OR SIGNAL DATA BELOW IS ORDERED: OLDEST → NEWEST\n\n"
-    user_prompt += market_prompt
-    user_prompt += "\n"
-    user_prompt += account_prompt
+        user_prompt = (
+            "It has been {minutes} minutes since you started trading. "
+            "The current time is {now} and you've been invoked {count} times. "
+            "Below, we are providing you with a variety of state data, price data, and "
+            "predictive signals so you can discover alpha. Below that is your current "
+            "account information, value, performance, positions, etc.\n\n"
+        ).format(minutes=minutes_since_start, now=current_time, count=invocation_count)
+        user_prompt += "ALL OF THE PRICE OR SIGNAL DATA BELOW IS ORDERED: OLDEST → NEWEST\n\n"
+        user_prompt += market_prompt
+        user_prompt += "\n"
+        user_prompt += account_prompt_before
 
-    log_section("USER PROMPT", user_prompt)
+        log_section("USER PROMPT", user_prompt)
 
-    client = DeepSeekClient(os.getenv("DEEPSEEK_API_KEY"))
-    response = client.request(system_prompt, user_prompt)
+        client = DeepSeekClient(os.getenv("DEEPSEEK_API_KEY"))
+        try:
+            response = client.request(system_prompt, user_prompt)
+        except Exception as exc:  # noqa: BLE001
+            log_section("LLM ERROR", f"DeepSeek request failed after retries: {exc}")
+            save_state(state)
+            logs = consume_logs()
+            return RunCycleResult(
+                user_prompt=user_prompt,
+                system_prompt=system_prompt,
+                llm_raw="",
+                chain_of_thought=None,
+                decisions={},
+                final_content="",
+                summary=None,
+                account_prompt_before=account_prompt_before,
+                account_prompt_after=account_prompt_before,
+                positions_before=positions_before,
+                positions_after=positions_before,
+                balances_before=balances_before,
+                balances_after=balances_before,
+                logs=logs,
+                minutes_since_start=minutes_since_start,
+                invocation_count=invocation_count,
+                run_timestamp=current_time.isoformat(),
+            )
 
-    log_section("LLM RAW", response.raw_text)
-    if response.chain_of_thought:
-        log_section("LLM CHAIN OF THOUGHT", response.chain_of_thought)
-    log_section("LLM DECISIONS", json.dumps(response.decisions, indent=2))
+        log_section("LLM RAW", response.raw_text)
+        log_section(
+            "LLM REASONING",
+            response.chain_of_thought or "<no reasoning content>",
+        )
+        log_section("LLM DECISIONS", json.dumps(response.decisions, indent=2))
 
-    process_decisions(exchange, response.decisions, positions_map, state)
-    save_state(state)
+        process_decisions(exchange, response.decisions, positions_before, balances_before, state)
+        save_state(state)
 
-    time.sleep(DEFAULT_SLEEP)
-    # Refresh view post-execution
-    account_prompt_after, _, _ = build_account_prompt(exchange, state)
-    log_section("ACCOUNT SUMMARY", account_prompt_after)
+        time.sleep(DEFAULT_SLEEP)
+        account_prompt_after, positions_after, balances_after = build_account_prompt(exchange, state)
+        log_section("ACCOUNT SUMMARY", account_prompt_after)
+
+        logs = consume_logs()
+
+        return RunCycleResult(
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            llm_raw=response.raw_text,
+            chain_of_thought=response.chain_of_thought,
+            decisions=response.decisions,
+            final_content=response.final_content,
+            summary=response.summary,
+            account_prompt_before=account_prompt_before,
+            account_prompt_after=account_prompt_after,
+            positions_before=positions_before,
+            positions_after=positions_after,
+            balances_before=balances_before,
+            balances_after=balances_after,
+            logs=logs,
+            minutes_since_start=minutes_since_start,
+            invocation_count=invocation_count,
+            run_timestamp=current_time.isoformat(),
+        )
+    finally:
+        try:
+            exchange.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def get_account_snapshot() -> Dict[str, Any]:
+    state = load_state()
+    exchange = build_exchange()
+    try:
+        account_prompt, positions_map, balances = build_account_prompt(exchange, state)
+    finally:
+        try:
+            exchange.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return {
+        "account_prompt": account_prompt,
+        "positions": positions_map,
+        "balances": balances,
+        "state": state,
+    }
+
+
+def main() -> None:
+    run_cycle()
 
 
 if __name__ == "__main__":

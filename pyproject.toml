@@ -9,4 +9,6 @@ dependencies = [
     "pandas>=2.3.3",
     "pandas-ta>=0.4.71b0",
     "cryptography>=44.0.0",
+    "python-dotenv>=1.0.1",
+    "streamlit>=1.33.0",
 ]

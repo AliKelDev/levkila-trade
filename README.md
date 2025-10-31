@@ -65,6 +65,20 @@ Under the hood each invocation will:
 - Persist local metadata (confidence, exit plan, order ids) in `bot_state.json` so the next turn can echo the same plan back to the LLM.
 - Track the bot start time and invocation count in `bot_state.json` so prompts include runtime context.
 - Respect the LLM’s `trade_signal_args` by sizing positions from `risk_usd`, placing market entries, and attaching reduce-only stop-loss and take-profit orders.
+- Run against DeepSeek’s `deepseek-reasoner` model so you can inspect the model’s captured chain-of-thought alongside the final JSON decision.
+- Feed additional derivatives context (latest and average open interest plus funding rate) for each symbol to match the richer prompts used in production runs.
+
+### Streamlit Dashboard
+For a richer view of prompts, LLM reasoning, and account state, launch the Streamlit UI:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+The dashboard now provides:
+- Manual or auto-looped trading cycles with configurable cadence
+- Live balances/positions plus the exact prompt and final JSON sent to the LLM
+- A conversation feed showing each run’s prompt, DeepSeek chain-of-thought (`reasoning_content`), parsed decisions, and execution logs in an easy-to-scan format
 
 The script currently runs a single evaluation/decision cycle. Wrap `main()` in your own scheduler if you need a continuous loop.
 
