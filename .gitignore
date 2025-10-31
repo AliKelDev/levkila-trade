@@ -29,3 +29,6 @@ htmlcov/
 binance_testnet_private.pem
 binance_testnet_public.pem
 *.pem
+
+# Local runtime state
+bot_state.json

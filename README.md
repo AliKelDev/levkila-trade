@@ -53,22 +53,29 @@ If you already manage credentials as `.pem` files, place them in this directory;
 ```bash
 python prompt_builder.py
 ```
-The script will:
-1. Connect to Binance Futures Testnet using the credentials from `.env`.
-2. Fetch the configured symbols and compute indicators (EMA, MACD, RSI, ATR).
-3. Gather account balances and open positions.
-4. Assemble a structured prompt (market data + account state) for the LLM.
-5. Load `system_prompt.md` and send both the system and user prompts to DeepSeek.
-6. Print the JSON decision returned by DeepSeek.
+What you’ll see in the terminal:
+1. The full user prompt that combines market data and your current account state.
+2. The raw DeepSeek response (including any `<chain_of_thought>` block) and the parsed JSON decisions.
+3. Order execution logs covering leverage updates, entries, exits, and bracket orders.
+4. A refreshed account summary after trades settle.
 
-The loop currently runs once per invocation. You can adapt the commented main loop for continuous operation.
+Under the hood each invocation will:
+- Connect to the Binance Futures Testnet with demo trading enabled.
+- Fetch OHLC data, compute indicators, and gather balances/positions.
+- Persist local metadata (confidence, exit plan, order ids) in `bot_state.json` so the next turn can echo the same plan back to the LLM.
+- Track the bot start time and invocation count in `bot_state.json` so prompts include runtime context.
+- Respect the LLM’s `trade_signal_args` by sizing positions from `risk_usd`, placing market entries, and attaching reduce-only stop-loss and take-profit orders.
+
+The script currently runs a single evaluation/decision cycle. Wrap `main()` in your own scheduler if you need a continuous loop.
 
 ## Customisation
-- Edit `COINS`, `INTRADAY_TIMEFRAME`, or indicator lengths in `prompt_builder.py` to target different markets or speeds.
-- Update `system_prompt.md` for alternate trading policies or evaluation criteria.
-- Extend the script with real order execution logic if you want to progress beyond prompt experimentation.
+- Adjust `COINS`, `INTRADAY_TIMEFRAME`, indicator settings, or the prompt copy directly in `prompt_builder.py`.
+- Change risk sizing by editing `calculate_order_amount` (e.g. incorporate margin requirements or volatility filters).
+- Swap bracket behaviour in `place_bracket_orders` if you prefer limit-based targets or OCO logic.
+- Extend `bot_state.json` with additional analytics you want the LLM to remember between turns.
 
 ## Safety Notes
-- Never commit `.env` or credential files. The included `.gitignore` enforces this.
-- Keep your Testnet and DeepSeek keys separate from production keys.
-- Always test strategy changes on the Testnet before going live.
+- Never commit `.env`, `.pem`, or `bot_state.json` files; they may contain secrets or live order ids.
+- Demo keys are separate from production – keep them isolated and rotate regularly.
+- Binance Testnet still enforces min notional and leverage limits. Watch the terminal output for rejection warnings.
+- Always verify orders on the Testnet UI before trusting a new strategy variant in production.
