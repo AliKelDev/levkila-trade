@@ -1,0 +1,807 @@
+/* ===================================
+   DeepTrade Control Panel - Professional Theme
+   =================================== */
+
+   :root {
+    /* Color Palette - Professional Dark Theme */
+    --primary-bg: #0a0e1a;
+    --secondary-bg: #131826;
+    --card-bg: #1a1f35;
+    --card-hover: #1f2541;
+    --accent-primary: #3b82f6;
+    --accent-secondary: #6366f1;
+    --success: #10b981;
+    --warning: #f59e0b;
+    --error: #ef4444;
+    --text-primary: #f8fafc;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --border: #1e293b;
+    --border-light: #334155;
+    
+    /* Shadows */
+    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+    --shadow-glow: 0 0 20px rgba(59, 130, 246, 0.15);
+    
+    /* Transitions */
+    --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-base: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-slow: 400ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ===================================
+   Base Styles
+   =================================== */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--primary-bg);
+    color: var(--text-primary);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+#react-entry-point {
+    min-height: 100vh;
+    background: linear-gradient(135deg, #0a0e1a 0%, #131826 50%, #0f1419 100%);
+}
+
+/* ===================================
+   Main Layout
+   =================================== */
+
+#react-entry-point > div {
+    max-width: 1600px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+h1 {
+    font-size: 2.5rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 2rem;
+    letter-spacing: -0.02em;
+    animation: fadeInDown var(--transition-slow);
+}
+
+h2 {
+    font-size: 1.75rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 1.5rem;
+    letter-spacing: -0.01em;
+}
+
+h3 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 1rem;
+    letter-spacing: -0.01em;
+}
+
+h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-top: 1.5rem;
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+hr {
+    border: none;
+    height: 1px;
+    background: linear-gradient(90deg, 
+        transparent 0%, 
+        var(--border-light) 50%, 
+        transparent 100%);
+    margin: 3rem 0;
+}
+
+/* ===================================
+   Tabs
+   =================================== */
+
+.tab {
+    background: var(--secondary-bg) !important;
+    border: 1px solid var(--border) !important;
+    border-bottom: none !important;
+    color: var(--text-secondary) !important;
+    padding: 1rem 2rem !important;
+    font-weight: 500 !important;
+    transition: all var(--transition-base) !important;
+    position: relative;
+    overflow: hidden;
+}
+
+.tab::before {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 3px;
+    background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
+    transform: translateY(100%);
+    transition: transform var(--transition-base);
+}
+
+.tab:hover {
+    background: var(--card-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.tab--selected {
+    background: var(--card-bg) !important;
+    color: var(--text-primary) !important;
+    border-bottom: none !important;
+}
+
+.tab--selected::before {
+    transform: translateY(0);
+}
+
+/* ===================================
+   Cards & Containers
+   =================================== */
+
+#dashboard > div,
+#trades > div,
+#settings > div {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+    box-shadow: var(--shadow-md);
+    transition: all var(--transition-base);
+    animation: fadeInUp var(--transition-slow);
+}
+
+#dashboard > div:hover,
+#settings > div:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-lg), var(--shadow-glow);
+    border-color: var(--border-light);
+}
+
+.balances {
+    background: linear-gradient(135deg, var(--card-bg) 0%, rgba(59, 130, 246, 0.05) 100%);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2rem;
+    margin: 2rem 0;
+    box-shadow: var(--shadow-md);
+}
+
+.metric-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+    transition: all var(--transition-base);
+}
+
+.metric-row:hover {
+    background: rgba(59, 130, 246, 0.08);
+    transform: translateX(4px);
+}
+
+.metric-label {
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-transform: capitalize;
+}
+
+.metric-value {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ===================================
+   Buttons
+   =================================== */
+
+button {
+    background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+    color: white;
+    border: none;
+    padding: 0.875rem 2rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all var(--transition-base);
+    box-shadow: var(--shadow-sm);
+    position: relative;
+    overflow: hidden;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+button::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, 
+        transparent, 
+        rgba(255, 255, 255, 0.2), 
+        transparent);
+    transition: left var(--transition-slow);
+}
+
+button:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md), 0 0 20px rgba(59, 130, 246, 0.4);
+}
+
+button:hover::before {
+    left: 100%;
+}
+
+button:active {
+    transform: translateY(0);
+}
+
+button:disabled {
+    background: var(--border);
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* ===================================
+   Status & Feedback
+   =================================== */
+
+.status {
+    padding: 1rem 1.5rem;
+    border-radius: 8px;
+    font-weight: 500;
+    margin-bottom: 1rem;
+    border-left: 4px solid;
+    animation: slideInLeft var(--transition-base);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.status:empty {
+    display: none;
+}
+
+.status:has([class*="✅"]),
+.status:has([class*="success"]) {
+    background: rgba(16, 185, 129, 0.1);
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.status:has([class*="🔄"]),
+.status:has([class*="loading"]) {
+    background: rgba(59, 130, 246, 0.1);
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+    animation: pulse 2s infinite;
+}
+
+.status:has([class*="⚠️"]),
+.status:has([class*="warning"]),
+.status:has([class*="failed"]) {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: var(--error);
+    color: var(--error);
+}
+
+.status:has([class*="⏸️"]),
+.status:has([class*="⏱️"]) {
+    background: rgba(245, 158, 11, 0.1);
+    border-color: var(--warning);
+    color: var(--warning);
+}
+
+.feedback {
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    margin-top: 1rem;
+    animation: fadeIn var(--transition-base);
+}
+
+.feedback:not(:empty) {
+    background: rgba(59, 130, 246, 0.1);
+    border: 1px solid var(--accent-primary);
+    color: var(--accent-primary);
+}
+
+.muted {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    font-style: italic;
+    margin-top: 0.5rem;
+}
+
+/* ===================================
+   Code Blocks
+   =================================== */
+
+.code-block, pre {
+    background: var(--secondary-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    margin: 1rem 0;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.code-block::-webkit-scrollbar,
+pre::-webkit-scrollbar {
+    height: 8px;
+}
+
+.code-block::-webkit-scrollbar-track,
+pre::-webkit-scrollbar-track {
+    background: var(--secondary-bg);
+}
+
+.code-block::-webkit-scrollbar-thumb,
+pre::-webkit-scrollbar-thumb {
+    background: var(--border-light);
+    border-radius: 4px;
+}
+
+.code-block::-webkit-scrollbar-thumb:hover,
+pre::-webkit-scrollbar-thumb:hover {
+    background: var(--accent-primary);
+}
+
+/* ===================================
+   Tables
+   =================================== */
+
+#positions-table {
+    animation: fadeInUp var(--transition-slow);
+}
+
+.dash-table-container {
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: var(--shadow-md);
+}
+
+.dash-spreadsheet {
+    background: var(--card-bg) !important;
+    border: 1px solid var(--border) !important;
+}
+
+.dash-spreadsheet-container {
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.dash-table-container .dash-spreadsheet-inner table {
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+/* Target ALL table cells with multiple selectors for maximum specificity */
+.dash-table-container .cell,
+.dash-table-container td.cell,
+.dash-table-container td,
+.dash-table-container .dash-cell,
+div.dash-table-container table td {
+    background: var(--card-bg) !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border) !important;
+    padding: 1rem !important;
+    transition: background var(--transition-fast);
+}
+
+/* Hover state for all cell types */
+.dash-table-container .cell:hover,
+.dash-table-container td.cell:hover,
+.dash-table-container td:hover,
+div.dash-table-container table td:hover {
+    background: var(--card-hover) !important;
+}
+
+/* Header cells with multiple selectors */
+.dash-table-container th.cell,
+.dash-table-container th,
+.dash-table-container thead th,
+div.dash-table-container table th {
+    background: var(--secondary-bg) !important;
+    font-weight: 600 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.85rem;
+    color: var(--text-secondary) !important;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    border: 1px solid var(--border) !important;
+    padding: 1rem !important;
+}
+
+/* Selected/active cell state */
+.dash-table-container .cell.cell--selected,
+.dash-table-container td.cell--selected,
+.dash-table-container .dash-cell.focused {
+    background: var(--card-hover) !important;
+    color: var(--text-primary) !important;
+    outline: 2px solid var(--accent-primary) !important;
+    outline-offset: -2px;
+}
+
+/* Input fields in editable cells */
+.dash-table-container input {
+    background: transparent !important;
+    color: var(--text-primary) !important;
+    border: none !important;
+    width: 100%;
+    padding: 0;
+}
+
+/* Ensure text is visible in all states */
+.dash-table-container .cell span,
+.dash-table-container td span,
+.dash-table-container .cell div,
+.dash-table-container td div {
+    color: var(--text-primary) !important;
+}
+
+/* ===================================
+   Graphs
+   =================================== */
+
+.js-plotly-plot {
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: var(--shadow-md);
+    animation: fadeInUp var(--transition-slow);
+}
+
+.js-plotly-plot .plotly {
+    border-radius: 12px;
+}
+
+/* Update Plotly theme to match */
+.modebar {
+    background: var(--card-bg) !important;
+}
+
+.modebar-btn {
+    color: var(--text-secondary) !important;
+}
+
+.modebar-btn:hover {
+    color: var(--text-primary) !important;
+    background: var(--card-hover) !important;
+}
+
+/* ===================================
+   Trade Feed (Details/Summary)
+   =================================== */
+
+.trades-feed {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+details {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    transition: all var(--transition-base);
+    animation: fadeInUp var(--transition-base);
+    animation-fill-mode: both;
+}
+
+details:nth-child(1) { animation-delay: 0ms; }
+details:nth-child(2) { animation-delay: 50ms; }
+details:nth-child(3) { animation-delay: 100ms; }
+details:nth-child(4) { animation-delay: 150ms; }
+details:nth-child(5) { animation-delay: 200ms; }
+
+details:hover {
+    border-color: var(--border-light);
+    box-shadow: var(--shadow-md);
+}
+
+details[open] {
+    background: var(--secondary-bg);
+    border-color: var(--accent-primary);
+    box-shadow: var(--shadow-lg), var(--shadow-glow);
+}
+
+summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--text-primary);
+    padding: 0.5rem;
+    border-radius: 6px;
+    transition: all var(--transition-fast);
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+summary::-webkit-details-marker {
+    display: none;
+}
+
+summary::before {
+    content: '▶';
+    font-size: 0.75rem;
+    color: var(--accent-primary);
+    transition: transform var(--transition-base);
+    display: inline-block;
+}
+
+details[open] summary::before {
+    transform: rotate(90deg);
+}
+
+summary:hover {
+    background: rgba(59, 130, 246, 0.08);
+    color: var(--accent-primary);
+}
+
+details p {
+    margin: 1rem 0;
+    color: var(--text-secondary);
+}
+
+/* ===================================
+   Form Inputs
+   =================================== */
+
+input[type="number"],
+input[type="text"] {
+    background: var(--secondary-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.875rem 1rem;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    transition: all var(--transition-base);
+    width: 100%;
+    max-width: 300px;
+    margin-top: 1rem;
+}
+
+input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+input::placeholder {
+    color: var(--text-muted);
+}
+
+/* Checklist */
+.dash-checklist {
+    margin: 1rem 0;
+}
+
+.dash-checklist label {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background var(--transition-fast);
+    color: var(--text-primary);
+}
+
+.dash-checklist label:hover {
+    background: rgba(59, 130, 246, 0.08);
+}
+
+.dash-checklist input[type="checkbox"] {
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--border-light);
+    border-radius: 4px;
+    margin-right: 0.75rem;
+    cursor: pointer;
+    transition: all var(--transition-base);
+    position: relative;
+}
+
+.dash-checklist input[type="checkbox"]:checked {
+    background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+    border-color: var(--accent-primary);
+}
+
+.dash-checklist input[type="checkbox"]:checked::after {
+    content: '✓';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: white;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+/* ===================================
+   Animations
+   =================================== */
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes fadeInDown {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes slideInLeft {
+    from {
+        opacity: 0;
+        transform: translateX(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.7;
+    }
+}
+
+@keyframes shimmer {
+    0% {
+        background-position: -1000px 0;
+    }
+    100% {
+        background-position: 1000px 0;
+    }
+}
+
+/* ===================================
+   Responsive Design
+   =================================== */
+
+@media (max-width: 1024px) {
+    #react-entry-point > div {
+        padding: 1.5rem;
+    }
+    
+    h1 {
+        font-size: 2rem;
+    }
+}
+
+@media (max-width: 768px) {
+    #react-entry-point > div {
+        padding: 1rem;
+    }
+    
+    h1 {
+        font-size: 1.75rem;
+    }
+    
+    button {
+        width: 100%;
+        margin-bottom: 0.5rem;
+    }
+    
+    .metric-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+}
+
+/* ===================================
+   Utility Classes
+   =================================== */
+
+.flex-gap-1 {
+    display: flex;
+    gap: 1rem;
+}
+
+.mt-1 {
+    margin-top: 1rem;
+}
+
+.mb-1 {
+    margin-bottom: 1rem;
+}
+
+/* Force table text visibility - nuclear option */
+.dash-table-container * {
+    color: inherit;
+}
+
+.dash-table-container table {
+    color: var(--text-primary);
+}
+
+/* ===================================
+   Loading States
+   =================================== */
+
+.loading {
+    position: relative;
+    overflow: hidden;
+}
+
+.loading::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg,
+        transparent,
+        rgba(59, 130, 246, 0.1),
+        transparent);
+    animation: shimmer 2s infinite;
+}

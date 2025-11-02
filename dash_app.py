@@ -316,7 +316,11 @@ def _positions_table(snapshot: Dict[str, Any]) -> tuple[List[Dict[str, Any]], Li
 def _equity_figure(history: List[Dict[str, Any]]) -> go.Figure:
     if not history:
         fig = go.Figure()
-        fig.update_layout(margin=dict(l=40, r=20, t=30, b=40))
+        fig.update_layout(
+            margin=dict(l=40, r=20, t=30, b=40),
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+        )
         fig.add_annotation(text="No history yet", showarrow=False, x=0.5, y=0.5)
         return fig
 
@@ -336,7 +340,11 @@ def _equity_figure(history: List[Dict[str, Any]]) -> go.Figure:
 
     if not rows:
         fig = go.Figure()
-        fig.update_layout(margin=dict(l=40, r=20, t=30, b=40))
+        fig.update_layout(
+            margin=dict(l=40, r=20, t=30, b=40),
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+        )
         fig.add_annotation(text="No history yet", showarrow=False, x=0.5, y=0.5)
         return fig
 
@@ -348,12 +356,28 @@ def _equity_figure(history: List[Dict[str, Any]]) -> go.Figure:
             y=df["total_balance"],
             mode="lines+markers",
             name="Total Balance",
+            line=dict(color='#3b82f6', width=3),
+            marker=dict(color='#6366f1', size=8),
+            fill='tozeroy',
+            fillcolor='rgba(59, 130, 246, 0.1)',
         )
     )
     fig.update_layout(
         margin=dict(l=40, r=20, t=30, b=40),
         xaxis_title="Time",
-        yaxis_title="Total Balance",
+        yaxis_title="Total Balance ($)",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(19, 24, 38, 0.5)',
+        font=dict(color='#f8fafc'),
+        xaxis=dict(
+            gridcolor='#1e293b',
+            showgrid=True,
+        ),
+        yaxis=dict(
+            gridcolor='#1e293b',
+            showgrid=True,
+        ),
+        hovermode='x unified',
     )
     return fig
 
@@ -376,14 +400,14 @@ def _build_trade_feed(history: List[Dict[str, Any]]) -> List[Any]:
         invocation = entry.get("invocation_count", "?")
         minutes = entry.get("minutes_since_start", "?")
 
-        summary = f"Run {invocation} — {readable}"
+        summary = f"Run #{invocation} — {readable}"
         if latest:
-            summary += " (latest)"
+            summary += " 🟢"
 
         feed.append(
             html.Details([
                 html.Summary(summary),
-                html.P(f"{minutes} minutes since start"),
+                html.P(f"⏱️ {minutes} minutes since start"),
                 html.H4("User Prompt"),
                 html.Pre(entry.get("user_prompt") or "", className="code-block"),
                 html.H4("System Prompt"),
@@ -424,24 +448,33 @@ app.layout = html.Div([
     html.H1("DeepTrade Control Panel"),
     dcc.Interval(id="refresh-interval", interval=4000, n_intervals=0),
     dcc.Tabs(id="tabs", value="dashboard", children=[
-        dcc.Tab(label="Dashboard", value="dashboard", children=[
+        dcc.Tab(label="📊 Dashboard", value="dashboard", children=[
+            # Control Panel Card
             html.Div([
-                html.H2("Controls"),
-                html.Div(id="snapshot-status", className="status"),
-                html.Div(id="cycle-status", className="status"),
+                html.H2("Control Center"),
                 html.Div([
-                    html.Button("Run Trading Cycle", id="run-cycle-btn", n_clicks=0),
-                    html.Button("Refresh Account Snapshot", id="refresh-snapshot-btn", n_clicks=0),
-                ], style={"display": "flex", "gap": "1rem", "marginTop": "1rem"}),
+                    html.Div(id="snapshot-status", className="status"),
+                    html.Div(id="cycle-status", className="status"),
+                ]),
+                html.Div([
+                    html.Button("🚀 Run Trading Cycle", id="run-cycle-btn", n_clicks=0),
+                    html.Button("🔄 Refresh Snapshot", id="refresh-snapshot-btn", n_clicks=0),
+                ], className="flex-gap-1", style={"marginTop": "1.5rem", "flexWrap": "wrap"}),
                 html.Div(id="manual-cycle-feedback", className="feedback"),
                 html.Div(id="snapshot-feedback", className="feedback"),
                 html.Div(id="cycle-hint", className="muted"),
                 html.Div(id="next-snapshot-info", className="muted"),
-            ]),
-            html.Hr(),
-            html.Div(id="balances-container", className="balances"),
+            ], style={"marginBottom": "1.5rem"}),
+            
+            # Account Overview Card
             html.Div([
-                html.H3("Open Positions"),
+                html.H2("Account Overview"),
+                html.Div(id="balances-container", className="balances"),
+            ], style={"marginBottom": "1.5rem"}),
+            
+            # Positions Card
+            html.Div([
+                html.H3("📈 Open Positions"),
                 dash_table.DataTable(
                     id="positions-table",
                     data=[],
@@ -449,56 +482,75 @@ app.layout = html.Div([
                     style_table={"overflowX": "auto"},
                     style_cell={"textAlign": "left", "whiteSpace": "pre-line"},
                 ),
-            ], id="positions-container"),
+            ], id="positions-container", style={"marginBottom": "1.5rem"}),
+            
+            # Account Prompt Card
             html.Div([
-                html.H3("Account Prompt"),
+                html.H3("🤖 Account Prompt"),
                 html.Pre(id="account-prompt", className="code-block"),
+            ], style={"marginBottom": "1.5rem"}),
+            
+            # Performance Card
+            html.Div([
+                html.H3("📊 Equity Curve"),
+                dcc.Graph(id="equity-curve"),
+                html.Div(id="history-empty", className="muted"),
             ]),
-            html.Hr(),
-            html.H3("Equity Curve"),
-            dcc.Graph(id="equity-curve"),
-            html.Div(id="history-empty", className="muted"),
         ]),
-        dcc.Tab(label="Trades", value="trades", children=[
-            html.Div(id="trades-feed", className="trades-feed"),
+        
+        dcc.Tab(label="📜 Trade History", value="trades", children=[
+            html.Div([
+                html.H2("Trade Execution History"),
+                html.Div(id="trades-feed", className="trades-feed"),
+            ], style={"padding": "2rem"}),
         ]),
-        dcc.Tab(label="Settings", value="settings", children=[
-            html.H2("Auto Loop"),
-            dcc.Checklist(
-                id="auto-loop-toggle",
-                options=[{"label": "Enable auto loop", "value": "enabled"}],
-                value=[],
-            ),
-            dcc.Input(
-                id="loop-interval-input",
-                type="number",
-                min=0,
-                max=3600,
-                step=1,
-                placeholder="Loop interval (seconds)",
-            ),
-            html.Div(id="grace-period-info", className="muted"),
-            html.Hr(),
-            html.H2("Account Snapshot Refresh"),
-            dcc.Checklist(
-                id="snapshot-auto-toggle",
-                options=[{"label": "Auto refresh snapshot", "value": "enabled"}],
-                value=["enabled"],
-            ),
-            dcc.Input(
-                id="snapshot-interval-input",
-                type="number",
-                min=15,
-                max=900,
-                step=15,
-                placeholder="Snapshot interval (seconds)",
-            ),
-            html.Div(id="last-snapshot-info", className="muted"),
-            html.Button("Save Settings", id="save-settings-btn", n_clicks=0, style={"marginTop": "1rem"}),
-            html.Div(id="settings-feedback", className="feedback"),
+        
+        dcc.Tab(label="⚙️ Settings", value="settings", children=[
+            html.Div([
+                html.Div([
+                    html.H2("🔁 Auto Loop Configuration"),
+                    dcc.Checklist(
+                        id="auto-loop-toggle",
+                        options=[{"label": " Enable automated trading cycles", "value": "enabled"}],
+                        value=[],
+                    ),
+                    dcc.Input(
+                        id="loop-interval-input",
+                        type="number",
+                        min=0,
+                        max=3600,
+                        step=1,
+                        placeholder="Loop interval (seconds)",
+                    ),
+                    html.Div(id="grace-period-info", className="muted"),
+                ], style={"marginBottom": "2rem"}),
+                
+                html.Hr(),
+                
+                html.Div([
+                    html.H2("📸 Snapshot Refresh Settings"),
+                    dcc.Checklist(
+                        id="snapshot-auto-toggle",
+                        options=[{"label": " Auto refresh account snapshot", "value": "enabled"}],
+                        value=["enabled"],
+                    ),
+                    dcc.Input(
+                        id="snapshot-interval-input",
+                        type="number",
+                        min=15,
+                        max=900,
+                        step=15,
+                        placeholder="Snapshot interval (seconds)",
+                    ),
+                    html.Div(id="last-snapshot-info", className="muted"),
+                ]),
+                
+                html.Button("💾 Save Settings", id="save-settings-btn", n_clicks=0, style={"marginTop": "2rem"}),
+                html.Div(id="settings-feedback", className="feedback"),
+            ], style={"padding": "2rem"}),
         ]),
     ]),
-])
+], style={"minHeight": "100vh"})
 
 
 @app.callback(
