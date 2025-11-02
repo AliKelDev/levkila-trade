@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +38,20 @@ load_dotenv()
 
 # --- Runtime Logging ---
 LOG_BUFFER: List[Dict[str, Any]] = []
+_progress_thread: Optional[Any] = None
+_progress_stop = False
+
+
+def _progress_indicator() -> None:
+    """Background thread that prints animated dots while cycle executes."""
+    global _progress_stop
+    dot_count = 0
+    while not _progress_stop:
+        dots = "." * ((dot_count % 4) + 1)
+        print(f"\r⏳ Executing{dots}   ", end="", flush=True)
+        dot_count += 1
+        time.sleep(2)  # Update every 2 seconds
+    print("\r" + " " * 30 + "\r", end="", flush=True)  # Clear the line
 
 
 # --- Data Classes ---
@@ -126,7 +142,19 @@ def extract_json_block(text: str) -> Dict[str, Any]:
         raise
 
 
-def extract_decision_json(final_content: str) -> Dict[str, Any]:
+def extract_decision_json(final_content: str, reasoning: Optional[str]) -> Dict[str, Any]:
+    if final_content:
+        match = re.search(r"<FINAL_JSON>(.*?)</FINAL_JSON>", final_content, re.DOTALL)
+        if match:
+            final_content = match.group(1)
+    try:
+        return extract_json_block(final_content)
+    except json.JSONDecodeError:
+        if reasoning:
+            match = re.search(r"<FINAL_JSON>(.*?)</FINAL_JSON>", reasoning, re.DOTALL)
+            if match:
+                return extract_json_block(match.group(1))
+        raise
     return extract_json_block(final_content)
 
 
@@ -356,7 +384,6 @@ def build_account_prompt(exchange: ccxt.Exchange, state: Dict[str, Any]) -> tupl
 
     account_prompt = "HERE IS YOUR ACCOUNT INFORMATION & PERFORMANCE\n"
     account_prompt += f"Current Total Return (percent): {pnl_percent:.2f}%\n"
-    account_prompt += f"Available Cash: {available_cash}\n"
     account_prompt += f"Current Account Value: {total_balance}\n"
     account_prompt += f"Current live positions & performance: {positions_blob}\n"
     account_prompt += "Sharpe Ratio: 0.0\n"
@@ -416,7 +443,7 @@ class DeepSeekClient:
                 chain = message.get("reasoning_content")
 
                 try:
-                    decisions = extract_decision_json(final_content)
+                    decisions = extract_decision_json(final_content, chain)
                 except json.JSONDecodeError as parse_error:
                     snippet = final_content[:200]
                     log_section(
@@ -713,9 +740,16 @@ def build_exchange() -> ccxt.Exchange:
 
 
 def run_cycle() -> RunCycleResult:
+    global _progress_thread, _progress_stop
+
     consume_logs()
     state = load_state()
     exchange = build_exchange()
+
+    # Start progress indicator
+    _progress_stop = False
+    _progress_thread = threading.Thread(target=_progress_indicator, daemon=True)
+    _progress_thread.start()
 
     try:
         current_time = pd.Timestamp.utcnow()
@@ -737,6 +771,10 @@ def run_cycle() -> RunCycleResult:
         system_prompt = load_system_prompt()
         market_prompt = build_market_prompt(exchange)
         account_prompt_before, positions_before, balances_before = build_account_prompt(exchange, state)
+
+        if "starting_capital" not in state:
+            total_balance = balances_before.get("total_balance")
+            state["starting_capital"] = total_balance
 
         user_prompt = (
             "It has been {minutes} minutes since you started trading. "
@@ -815,6 +853,11 @@ def run_cycle() -> RunCycleResult:
             run_timestamp=current_time.isoformat(),
         )
     finally:
+        # Stop progress indicator
+        _progress_stop = True
+        if _progress_thread and _progress_thread.is_alive():
+            _progress_thread.join(timeout=1)
+
         try:
             exchange.close()
         except Exception:  # noqa: BLE001
