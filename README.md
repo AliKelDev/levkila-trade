@@ -68,19 +68,19 @@ Under the hood each invocation will:
 - Run against DeepSeek’s `deepseek-reasoner` model so you can inspect the model’s captured chain-of-thought alongside the final JSON decision.
 - Feed additional derivatives context (latest and average open interest plus funding rate) for each symbol to match the richer prompts used in production runs.
 
-### Streamlit Dashboard
-For a richer view of prompts, LLM reasoning, and account state, launch the Streamlit UI:
+### Dash Dashboard
+For a richer view of prompts, LLM reasoning, and account state, launch the Dash UI:
 
 ```bash
-streamlit run streamlit_app.py
+python dash_app.py
 ```
 
-The dashboard now provides:
-- Manual or auto-looped trading cycles with configurable cadence
+The dashboard provides:
+- Manual or auto-looped trading cycles with configurable cadence and real-time status updates
 - Live balances/positions plus the exact prompt and final JSON sent to the LLM
 - A conversation feed showing each run’s prompt, DeepSeek chain-of-thought (`reasoning_content`), parsed decisions, and execution logs in an easy-to-scan format
 
-The script currently runs a single evaluation/decision cycle. Wrap `main()` in your own scheduler if you need a continuous loop.
+Dash runs a persistent server, so the control panel stays responsive while trading cycles and snapshot refreshes execute in worker threads.
 
 ## Customisation
 - Adjust `COINS`, `INTRADAY_TIMEFRAME`, indicator settings, or the prompt copy directly in `prompt_builder.py`.

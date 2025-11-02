@@ -348,6 +348,43 @@ def build_account_prompt(exchange: ccxt.Exchange, state: Dict[str, Any]) -> tupl
     balance = exchange.fetch_balance()
     total_balance = balance.get("total", {}).get("USDT", 0)
     available_cash = balance.get("free", {}).get("USDT", 0)
+    margin_balance = total_balance
+
+    info = balance.get("info")
+    # Binance futures returns a list of asset dicts; prefer their richer fields when present
+    assets = None
+    if isinstance(info, dict):
+        assets = info.get("assets") or info.get("balances")
+        if isinstance(assets, dict):  # Some CCXT versions return mapping keyed by asset
+            assets = list(assets.values())
+    elif isinstance(info, list):
+        assets = info
+
+    if isinstance(assets, list):
+        for entry in assets:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("asset") != "USDT":
+                continue
+            available_cash = float(
+                entry.get("availableBalance")
+                or entry.get("available")
+                or entry.get("free")
+                or available_cash
+            )
+            total_balance = float(
+                entry.get("balance")
+                or entry.get("walletBalance")
+                or entry.get("crossWalletBalance")
+                or total_balance
+            )
+            margin_balance = float(
+                entry.get("marginBalance")
+                or entry.get("margin_balance")
+                or entry.get("crossMarginBalance")
+                or margin_balance
+            )
+            break
     starting_capital = state.get("starting_capital", 5000)
     pnl_percent = 0.0
     if starting_capital:
@@ -391,6 +428,7 @@ def build_account_prompt(exchange: ccxt.Exchange, state: Dict[str, Any]) -> tupl
     balances = {
         "total_balance": total_balance,
         "available_cash": available_cash,
+        "margin_balance": margin_balance,
         "pnl_percent": pnl_percent,
     }
     return account_prompt, positions_map, balances
@@ -791,8 +829,13 @@ def run_cycle() -> RunCycleResult:
         log_section("USER PROMPT", user_prompt)
 
         client = DeepSeekClient(os.getenv("DEEPSEEK_API_KEY"))
+        log_section(
+            "LLM CALL",
+            "Submitting request to DeepSeek (model: {model})".format(model=DEEPSEEK_MODEL),
+        )
         try:
             response = client.request(system_prompt, user_prompt)
+            log_section("LLM CALL", "DeepSeek response received successfully")
         except Exception as exc:  # noqa: BLE001
             log_section("LLM ERROR", f"DeepSeek request failed after retries: {exc}")
             save_state(state)
@@ -816,6 +859,8 @@ def run_cycle() -> RunCycleResult:
                 invocation_count=invocation_count,
                 run_timestamp=current_time.isoformat(),
             )
+        finally:
+            log_section("LLM CALL", "DeepSeek request finished")
 
         log_section("LLM RAW", response.raw_text)
         log_section(
