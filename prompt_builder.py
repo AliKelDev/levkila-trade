@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,6 +17,8 @@ import pandas as pd
 import pandas_ta as ta
 import requests
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 
 # --- Constants & Paths ---
 COINS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "DOGE/USDT"]
@@ -25,6 +28,7 @@ INTRADAY_BARS = 10
 LONGTERM_BARS = 10
 SYSTEM_PROMPT_FILENAME = "system_prompt.md"
 STATE_PATH = Path("bot_state.json")
+SENTIMENT_CACHE_PATH = Path("sentiment_snapshot.json")
 DEFAULT_SLEEP = 1.5
 MAX_DEEPSEEK_RETRIES = 3
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
@@ -777,6 +781,90 @@ def build_exchange() -> ccxt.Exchange:
     return exchange
 
 
+def fetch_and_cache_sentiment(coins: List[str] = COINS) -> None:
+    """
+    Background job that fetches qualitative data and stores it on disk.
+    """
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return
+
+    try:
+        client = genai.Client(api_key=api_key)
+
+        coin_names = ", ".join(symbol_to_coin(symbol) for symbol in coins)
+        prompt = (
+            f"Using Google Search, find the latest market-moving news for: {coin_names}. "
+            "Summarize the sentiment (Bullish/Bearish/Neutral) and top 3 headlines. "
+            "Be concise (max 200 words). Focus on the last 24 hours."
+        )
+
+        contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=prompt)],
+            )
+        ]
+        config = types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        )
+
+        response = client.models.generate_content(
+            model="gemini-flash-lite-latest",
+            contents=contents,
+            config=config,
+        )
+        sentiment_text = (response.text or "").strip()
+        if not sentiment_text:
+            sentiment_text = "No sentiment content returned."
+        snapshot = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "content": sentiment_text,
+            "status": "fresh",
+        }
+
+        temp_path = SENTIMENT_CACHE_PATH.with_suffix(".tmp")
+        with temp_path.open("w", encoding="utf-8") as handle:
+            json.dump(snapshot, handle, indent=2)
+        temp_path.replace(SENTIMENT_CACHE_PATH)
+
+        log_section("SENTIMENT", "Gemini cache updated successfully.")
+    except Exception as exc:  # noqa: BLE001
+        log_section("ERROR", f"Sentiment fetch failed: {exc}")
+
+
+def get_cached_sentiment() -> str:
+    """
+    Returns formatted qualitative intelligence if we have a recent snapshot.
+    """
+    if not SENTIMENT_CACHE_PATH.exists():
+        return ""
+
+    try:
+        with SENTIMENT_CACHE_PATH.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+
+        timestamp = data.get("timestamp")
+        content = data.get("content", "")
+        if not timestamp or not content:
+            return ""
+
+        ts = datetime.fromisoformat(timestamp)
+        age_minutes = (datetime.now(timezone.utc) - ts).total_seconds() / 60
+
+        label = "Latest News"
+        if age_minutes > 60:
+            label = "Old News (Context Only)"
+
+        return (
+            f"\n### QUALITATIVE INTELLIGENCE ({label} - {int(age_minutes)}m ago)\n"
+            f"{content}\n"
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def run_cycle() -> RunCycleResult:
     global _progress_thread, _progress_stop
 
@@ -809,6 +897,7 @@ def run_cycle() -> RunCycleResult:
         system_prompt = load_system_prompt()
         market_prompt = build_market_prompt(exchange)
         account_prompt_before, positions_before, balances_before = build_account_prompt(exchange, state)
+        qualitative_info = get_cached_sentiment()
 
         if "starting_capital" not in state:
             total_balance = balances_before.get("total_balance")
@@ -821,6 +910,8 @@ def run_cycle() -> RunCycleResult:
             "predictive signals so you can discover alpha. Below that is your current "
             "account information, value, performance, positions, etc.\n\n"
         ).format(minutes=minutes_since_start, now=current_time, count=invocation_count)
+        if qualitative_info:
+            user_prompt += qualitative_info + "\n"
         user_prompt += "ALL OF THE PRICE OR SIGNAL DATA BELOW IS ORDERED: OLDEST → NEWEST\n\n"
         user_prompt += market_prompt
         user_prompt += "\n"

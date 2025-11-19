@@ -18,7 +18,12 @@ from apscheduler.triggers.interval import IntervalTrigger
 from dash import Dash, dcc, html, dash_table
 from dash.dependencies import Input, Output, State
 
-from prompt_builder import get_account_snapshot, run_cycle
+from prompt_builder import (
+    SENTIMENT_CACHE_PATH,
+    fetch_and_cache_sentiment,
+    get_account_snapshot,
+    run_cycle,
+)
 
 
 LOGGER = logging.getLogger("deeptrade.dash")
@@ -269,8 +274,22 @@ def configure_snapshot_job() -> None:
             SCHEDULER.remove_job("snapshot_refresh_job")
 
 
+def configure_sentiment_job() -> None:
+    job_id = "gemini_sentiment_job"
+    if not SCHEDULER.get_job(job_id):
+        SCHEDULER.add_job(
+            fetch_and_cache_sentiment,
+            "interval",
+            minutes=30,
+            id=job_id,
+            next_run_time=datetime.now(timezone.utc),
+        )
+        LOGGER.info("Sentiment background job scheduled (every 30m).")
+
+
 configure_auto_cycle_job()
 configure_snapshot_job()
+configure_sentiment_job()
 
 
 app = Dash(__name__)
@@ -523,6 +542,19 @@ app.layout = html.Div(
                                     dcc.Graph(id="equity-curve"),
                                     html.Div(id="history-empty", className="muted"),
                                 ], className="panel panel--chart panel--wide"),
+                                html.Div([
+                                    html.H3("Market Intelligence"),
+                                    html.Div(
+                                        id="sentiment-display",
+                                        className="markdown-body",
+                                        style={"fontSize": "0.9rem"},
+                                    ),
+                                    html.Div(
+                                        id="sentiment-timestamp",
+                                        className="muted",
+                                        style={"marginTop": "0.5rem"},
+                                    ),
+                                ], className="panel panel--wide"),
                             ], className="dashboard-grid"),
                         ],
                     ),
@@ -676,6 +708,8 @@ def handle_save_settings(
     Output("loop-interval-input", "value"),
     Output("snapshot-auto-toggle", "value"),
     Output("snapshot-interval-input", "value"),
+    Output("sentiment-display", "children"),
+    Output("sentiment-timestamp", "children"),
     Input("refresh-interval", "n_intervals"),
 )
 def update_ui(n_intervals: int):
@@ -730,6 +764,22 @@ def update_ui(n_intervals: int):
     auto_loop_value = ["enabled"] if snapshot.get("loop_enabled") else []
     snapshot_auto_value = ["enabled"] if snapshot.get("snapshot_auto_refresh", True) else []
 
+    sentiment_display = dcc.Markdown("Loading or waiting for next cycle...")
+    sentiment_time = ""
+    if SENTIMENT_CACHE_PATH.exists():
+        try:
+            with SENTIMENT_CACHE_PATH.open("r", encoding="utf-8") as handle:
+                sentiment_data = json.load(handle)
+            sentiment_content = sentiment_data.get("content") or "No content"
+            sentiment_display = dcc.Markdown(sentiment_content)
+
+            timestamp = sentiment_data.get("timestamp")
+            if timestamp:
+                ts = datetime.fromisoformat(timestamp)
+                sentiment_time = f"Updated: {ts.astimezone().strftime('%H:%M')}"
+        except Exception:  # noqa: BLE001
+            sentiment_display = dcc.Markdown("Unable to load sentiment snapshot.")
+
     return (
         _strip_emoji(snapshot.get("snapshot_status", "")),
         _strip_emoji(snapshot.get("cycle_status", "")),
@@ -748,6 +798,8 @@ def update_ui(n_intervals: int):
         snapshot.get("loop_interval"),
         snapshot_auto_value,
         snapshot.get("snapshot_refresh_interval"),
+        sentiment_display,
+        sentiment_time,
     )
 
 if __name__ == "__main__":
