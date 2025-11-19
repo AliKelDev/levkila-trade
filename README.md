@@ -55,6 +55,8 @@ This rigid, rule-based approach transforms the LLM from a generic chatbot into a
 -   **Interactive Dashboard**: The Dash UI provides a rich, real-time view of the bot's operations, crucial for monitoring and debugging.
 -   **Inspectable AI Reasoning**: Leverages the `deepseek-reasoner` model to capture the chain-of-thought, allowing for analysis of *why* the bot made a particular decision.
 -   **Qualitative Market Intelligence**: Integrates real-time news and sentiment analysis from Google Gemini to provide the agent with broader market context beyond just price action.
+<img width="1348" height="314" alt="image" src="https://github.com/user-attachments/assets/1b723086-cd4a-4e34-8cf4-ab80f4444187" />
+
 
 ## Getting Started
 
