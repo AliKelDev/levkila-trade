@@ -53,6 +53,8 @@ class AppState:
         self.grace_period_end: float = 0.0
         self.snapshot_auto_refresh: bool = True
         self.snapshot_refresh_interval: int = DEFAULT_SNAPSHOT_REFRESH
+        self.selected_model: str = "gemini"  # Default to Gemini
+        self.selected_prompt: str = "strict"  # Default to Strict mode
 
     def update(self, **kwargs: Any) -> None:
         with self._lock:
@@ -74,6 +76,8 @@ class AppState:
                 "grace_period_end": self.grace_period_end,
                 "snapshot_auto_refresh": self.snapshot_auto_refresh,
                 "snapshot_refresh_interval": self.snapshot_refresh_interval,
+                "selected_model": self.selected_model,
+                "selected_prompt": self.selected_prompt,
             }
 
     def append_history(self, payload: Dict[str, Any]) -> None:
@@ -116,7 +120,9 @@ def _cycle_worker(source: str) -> None:
     STATE.update(cycle_status=f"{source} trading cycle started {_format_local_timestamp(start_ts)}")
 
     try:
-        result = run_cycle()
+        selected_model = STATE.snapshot().get("selected_model", "gemini")
+        selected_prompt = STATE.snapshot().get("selected_prompt", "strict")
+        result = run_cycle(model_name=selected_model, prompt_template=selected_prompt)
         _record_result(result)
         STATE.update(loop_primed=True)
         if STATE.loop_enabled:
@@ -617,6 +623,37 @@ app.layout = html.Div(
                                     html.Div(id="last-snapshot-info", className="muted"),
                                 ], className="panel section-block"),
 
+                                html.Div([
+                                    html.H2("LLM Model Selection"),
+                                    dcc.RadioItems(
+                                        id="model-selector",
+                                        options=[
+                                            {"label": "Gemini (gemini-3-flash-preview)", "value": "gemini"},
+                                            {"label": "DeepSeek (deepseek-chat)", "value": "deepseek"},
+                                        ],
+                                        value="gemini",
+                                        className="radio-group",
+                                        labelStyle={"display": "block", "marginBottom": "0.5rem"},
+                                    ),
+                                    html.Div(id="model-status-info", className="muted"),
+                                ], className="panel section-block"),
+
+                                html.Div([
+                                    html.H2("Trading Strategy (Prompt Template)"),
+                                    dcc.RadioItems(
+                                        id="prompt-selector",
+                                        options=[
+                                            {"label": "Strict Mode (Conservative, Risk Management Focus)", "value": "strict"},
+                                            {"label": "Quant Mode (Regime Analysis, Sharpe Ratio Optimization)", "value": "quant"},
+                                            {"label": "Aggressive Mode (Profit Maximization, Maximum Freedom)", "value": "aggressive"},
+                                        ],
+                                        value="strict",
+                                        className="radio-group",
+                                        labelStyle={"display": "block", "marginBottom": "0.5rem"},
+                                    ),
+                                    html.Div(id="prompt-status-info", className="muted"),
+                                ], className="panel section-block"),
+
                                 html.Button("Save Settings", id="save-settings-btn", n_clicks=0, className="action-btn action-btn--primary"),
                                 html.Div(id="settings-feedback", className="feedback"),
                             ], className="settings-stack"),
@@ -660,6 +697,8 @@ def handle_manual_snapshot(n_clicks: int) -> str:
     State("loop-interval-input", "value"),
     State("snapshot-auto-toggle", "value"),
     State("snapshot-interval-input", "value"),
+    State("model-selector", "value"),
+    State("prompt-selector", "value"),
     prevent_initial_call=True,
 )
 def handle_save_settings(
@@ -668,17 +707,23 @@ def handle_save_settings(
     loop_interval_value: Optional[int],
     snapshot_auto_values: List[str],
     snapshot_interval_value: Optional[int],
+    model_selector_value: Optional[str],
+    prompt_selector_value: Optional[str],
 ) -> str:
     loop_enabled = "enabled" in (auto_loop_values or [])
     loop_interval = int(loop_interval_value or 0)
     snapshot_auto = "enabled" in (snapshot_auto_values or [])
     snapshot_interval = int(snapshot_interval_value or DEFAULT_SNAPSHOT_REFRESH)
+    selected_model = model_selector_value or "gemini"
+    selected_prompt = prompt_selector_value or "strict"
 
     STATE.update(
         loop_enabled=loop_enabled,
         loop_interval=loop_interval,
         snapshot_auto_refresh=snapshot_auto,
         snapshot_refresh_interval=max(15, snapshot_interval),
+        selected_model=selected_model,
+        selected_prompt=selected_prompt,
     )
 
     if not loop_enabled:
@@ -710,6 +755,10 @@ def handle_save_settings(
     Output("snapshot-interval-input", "value"),
     Output("sentiment-display", "children"),
     Output("sentiment-timestamp", "children"),
+    Output("model-selector", "value"),
+    Output("model-status-info", "children"),
+    Output("prompt-selector", "value"),
+    Output("prompt-status-info", "children"),
     Input("refresh-interval", "n_intervals"),
 )
 def update_ui(n_intervals: int):
@@ -780,6 +829,12 @@ def update_ui(n_intervals: int):
         except Exception:  # noqa: BLE001
             sentiment_display = dcc.Markdown("Unable to load sentiment snapshot.")
 
+    selected_model = snapshot.get("selected_model", "gemini")
+    model_status = f"Using {selected_model.upper()} for trading decisions"
+
+    selected_prompt = snapshot.get("selected_prompt", "strict")
+    prompt_status = f"Strategy: {selected_prompt.upper()} mode"
+
     return (
         _strip_emoji(snapshot.get("snapshot_status", "")),
         _strip_emoji(snapshot.get("cycle_status", "")),
@@ -800,6 +855,10 @@ def update_ui(n_intervals: int):
         snapshot.get("snapshot_refresh_interval"),
         sentiment_display,
         sentiment_time,
+        selected_model,
+        model_status,
+        selected_prompt,
+        prompt_status,
     )
 
 if __name__ == "__main__":

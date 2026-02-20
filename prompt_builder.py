@@ -30,13 +30,16 @@ SYSTEM_PROMPT_FILENAME = "system_prompt.md"
 STATE_PATH = Path("bot_state.json")
 SENTIMENT_CACHE_PATH = Path("sentiment_snapshot.json")
 DEFAULT_SLEEP = 1.5
-MAX_DEEPSEEK_RETRIES = 3
-DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-DEEPSEEK_MODEL = "deepseek-reasoner"
+MAX_GEMINI_RETRIES = 3
+GEMINI_MODEL = "gemini-3-flash-preview"
+GEMINI_MAX_TOKENS = 8192
+GEMINI_TIMEOUT = 300  # seconds
 
-# Give the reasoner ample room; it often spends hundreds of tokens on CoT
+# DeepSeek configuration
+DEEPSEEK_API_BASE = "https://api.deepseek.com/v1"
+DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_MAX_TOKENS = 8192
-DEEPSEEK_TIMEOUT = 300  # seconds
+MAX_DEEPSEEK_RETRIES = 3
 
 load_dotenv()
 
@@ -60,7 +63,7 @@ def _progress_indicator() -> None:
 
 # --- Data Classes ---
 @dataclass
-class DeepSeekResponse:
+class LLMResponse:
     raw_text: str
     decisions: Dict[str, Any]
     chain_of_thought: Optional[str]
@@ -438,51 +441,94 @@ def build_account_prompt(exchange: ccxt.Exchange, state: Dict[str, Any]) -> tupl
     return account_prompt, positions_map, balances
 
 
-# --- DeepSeek Client ---
+# --- Gemini Client ---
+class GeminiClient:
+    def __init__(self, api_key: Optional[str]) -> None:
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY is required")
+        self.api_key = api_key
+        # Reuse genai.Client
+        self.client = genai.Client(api_key=api_key)
+
+    def request(self, system_prompt: str, user_prompt: str) -> LLMResponse:
+        last_error: Optional[str] = None
+        for attempt in range(1, MAX_GEMINI_RETRIES + 1):
+            try:
+                response = self.client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=user_prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        max_output_tokens=GEMINI_MAX_TOKENS,
+                    ),
+                )
+                final_content = response.text or ""
+                chain = None # Flash-lite doesn't expose CoT in this way
+
+                try:
+                    decisions = extract_decision_json(final_content, chain)
+                except json.JSONDecodeError as parse_error:
+                    snippet = final_content[:200]
+                    log_section(
+                        "LLM",
+                        (
+                            "Failed to parse JSON from Gemini response. "
+                            f"Error: {parse_error}. Snippet: {snippet!r}"
+                        ),
+                    )
+                    raise
+
+                return LLMResponse(
+                    raw_text=final_content,
+                    decisions=decisions,
+                    chain_of_thought=chain,
+                    final_content=final_content,
+                    summary=None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                log_section("LLM", f"Gemini attempt {attempt} failed: {exc}")
+                time.sleep(2.0 * attempt)
+        raise RuntimeError(f"Gemini request failed: {last_error}")
+
+
 class DeepSeekClient:
+    """DeepSeek LLM client using OpenAI-compatible API."""
     def __init__(self, api_key: Optional[str]) -> None:
         if not api_key:
             raise ValueError("DEEPSEEK_API_KEY is required")
         self.api_key = api_key
-        self.session = requests.Session()
+        self.base_url = DEEPSEEK_API_BASE
 
-    def request(self, system_prompt: str, user_prompt: str) -> DeepSeekResponse:
-        payload = {
-            "model": DEEPSEEK_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "max_tokens": DEEPSEEK_MAX_TOKENS,
-        }
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
-
-        backoff = 2.0
+    def request(self, system_prompt: str, user_prompt: str) -> LLMResponse:
         last_error: Optional[str] = None
         for attempt in range(1, MAX_DEEPSEEK_RETRIES + 1):
             try:
-                response = self.session.post(
-                    DEEPSEEK_URL,
+                headers = {
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                }
+                payload = {
+                    "model": DEEPSEEK_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "max_tokens": DEEPSEEK_MAX_TOKENS,
+                    "temperature": 0.7,
+                }
+                
+                response = requests.post(
+                    f"{self.base_url}/chat/completions",
                     headers=headers,
-                    data=json.dumps(payload),
-                    timeout=DEEPSEEK_TIMEOUT,
+                    json=payload,
+                    timeout=60,
                 )
-                if response.status_code >= 500:
-                    last_error = f"Server error {response.status_code}: {response.text}"
-                    raise RuntimeError(last_error)
-                if response.status_code == 429:
-                    time.sleep(backoff)
-                    backoff *= 2
-                    continue
                 response.raise_for_status()
-                body = response.json()
-                message = body["choices"][0]["message"]
-                final_content = message.get("content", "")
-                chain = message.get("reasoning_content")
+                result = response.json()
+                
+                final_content = result["choices"][0]["message"]["content"]
+                chain = None  # DeepSeek doesn't expose reasoning separately
 
                 try:
                     decisions = extract_decision_json(final_content, chain)
@@ -497,7 +543,7 @@ class DeepSeekClient:
                     )
                     raise
 
-                return DeepSeekResponse(
+                return LLMResponse(
                     raw_text=final_content,
                     decisions=decisions,
                     chain_of_thought=chain,
@@ -507,9 +553,28 @@ class DeepSeekClient:
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
                 log_section("LLM", f"DeepSeek attempt {attempt} failed: {exc}")
-                time.sleep(backoff)
-                backoff *= 2
+                time.sleep(2.0 * attempt)
         raise RuntimeError(f"DeepSeek request failed: {last_error}")
+
+
+def get_llm_client(model_name: str = "gemini") -> GeminiClient | DeepSeekClient:
+    """Factory function to create the appropriate LLM client based on model name."""
+    model_name = model_name.lower().strip()
+    
+    if model_name == "gemini":
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY not found in environment")
+        log_section("LLM", f"Using Gemini model: {GEMINI_MODEL}")
+        return GeminiClient(api_key)
+    elif model_name == "deepseek":
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        if not api_key:
+            raise ValueError("DEEPSEEK_API_KEY not found in environment")
+        log_section("LLM", f"Using DeepSeek model: {DEEPSEEK_MODEL}")
+        return DeepSeekClient(api_key)
+    else:
+        raise ValueError(f"Unsupported model: {model_name}. Choose 'gemini' or 'deepseek'.")
 
 
 # --- Order Helpers ---
@@ -753,12 +818,135 @@ def process_decisions(
             available_cash -= required_margin
             continue
 
+        # AGGRESSIVE MODE: Add to existing position (pyramiding)
+        if signal == "add_to_position":
+            position = positions_map.get(coin)
+            if not position or not position.get("contracts"):
+                log_section("WARNING", f"No position to add to for {coin}")
+                continue
+            
+            # Determine side from existing position
+            current_contracts = position["contracts"]
+            side = "long" if current_contracts > 0 else "short"
+            order_side = "buy" if side == "long" else "sell"
+            
+            # Get additional size from args
+            additional_size = float(args.get("additional_contracts", 0))
+            if additional_size <= 0:
+                log_section("WARNING", f"Invalid additional_contracts for {coin}")
+                continue
+            
+            additional_size = ensure_precision(exchange, symbol, additional_size)
+            
+            ticker = exchange.fetch_ticker(symbol)
+            price = ticker.get("last") or ticker.get("close")
+            
+            # Place market order to increase position
+            add_order = send_market_order(exchange, symbol, order_side, additional_size)
+            if add_order:
+                log_section("PYRAMID", f"Added {additional_size} contracts to {coin} position")
+            continue
+
+        # AGGRESSIVE MODE: Adjust stop-loss and/or take-profit
+        if signal == "adjust_exits":
+            position = positions_map.get(coin)
+            if not position:
+                log_section("WARNING", f"No position to adjust for {coin}")
+                continue
+            
+            state_entry = state_positions.get(coin, {})
+            
+            # Cancel existing SL/TP orders
+            cancel_order_if_exists(exchange, symbol, state_entry.get("sl_oid"))
+            cancel_order_if_exists(exchange, symbol, state_entry.get("tp_oid"))
+            
+            # Get new exit levels
+            new_stop = args.get("new_stop_loss")
+            new_target = args.get("new_profit_target")
+            
+            if not new_stop or not new_target:
+                log_section("WARNING", f"Missing exit levels for {coin}")
+                continue
+            
+            # Determine side from position
+            contracts = position["contracts"]
+            side = "long" if contracts > 0 else "short"
+            amount = abs(contracts)
+            
+            # Place new bracket orders
+            bracket = place_bracket_orders(exchange, symbol, side, amount, float(new_stop), float(new_target))
+            
+            # Update state
+            state_entry["sl_oid"] = bracket.get("stop_loss") or -1
+            state_entry["tp_oid"] = bracket.get("take_profit") or -1
+            state_entry["exit_plan"] = {
+                "stop_loss": float(new_stop),
+                "profit_target": float(new_target),
+                "invalidation_condition": state_entry.get("exit_plan", {}).get("invalidation_condition", "")
+            }
+            
+            log_section("ADJUST", f"Updated exits for {coin}: SL={new_stop}, TP={new_target}")
+            continue
+
+        # AGGRESSIVE MODE: Partial close
+        if signal == "partial_close":
+            position = positions_map.get(coin)
+            if not position:
+                log_section("WARNING", f"No position to partially close for {coin}")
+                continue
+            
+            contracts = position["contracts"]
+            close_percentage = float(args.get("close_percentage", 0))
+            
+            if close_percentage <= 0 or close_percentage >= 1:
+                log_section("WARNING", f"Invalid close_percentage {close_percentage} for {coin}")
+                continue
+            
+            # Calculate amount to close
+            close_amount = abs(contracts) * close_percentage
+            close_amount = ensure_precision(exchange, symbol, close_amount)
+            
+            # Place reduceOnly order
+            side = "sell" if contracts > 0 else "buy"
+            try:
+                order = exchange.create_order(
+                    symbol,
+                    "market",
+                    side,
+                    close_amount,
+                    None,
+                    {
+                        "reduceOnly": True,
+                        "newOrderRespType": "RESULT",
+                    },
+                )
+                log_section("PARTIAL", f"Closed {close_percentage*100:.0f}% ({close_amount} contracts) of {coin} position")
+            except ExchangeError as exc:
+                message = str(exc)
+                log_section("ERROR", f"Partial close failed for {coin}: {message}")
+            continue
+
         log_section("WARNING", f"Unhandled signal {signal} for {coin}")
 
 
 # --- Main Routine ---
-def load_system_prompt() -> str:
-    with open(SYSTEM_PROMPT_FILENAME, "r", encoding="utf-8") as handle:
+def load_system_prompt(prompt_template: str = "strict") -> str:
+    """Load system prompt based on selected template."""
+    template_map = {
+        "strict": "system_prompt.md",
+        "aggressive": "system_prompt_aggressive.md",
+        "quant": "system_prompt_quant.md",
+    }
+    
+    filename = template_map.get(prompt_template.lower(), "system_prompt.md")
+    prompt_path = Path(filename)
+    
+    if not prompt_path.exists():
+        log_section("WARNING", f"Prompt template '{filename}' not found, using default")
+        filename = "system_prompt.md"
+    
+    log_section("PROMPT", f"Loading {prompt_template.upper()} template: {filename}")
+    with open(filename, "r", encoding="utf-8") as handle:
         return handle.read()
 
 
@@ -774,6 +962,7 @@ def build_exchange() -> ccxt.Exchange:
         "enableRateLimit": True,
         "options": {
             "defaultType": "future",
+            "recvWindow": 10000,  # 10 second tolerance for timestamp sync
         },
     })
     exchange.enable_demo_trading(True)
@@ -865,7 +1054,7 @@ def get_cached_sentiment() -> str:
         return ""
 
 
-def run_cycle() -> RunCycleResult:
+def run_cycle(model_name: str = "gemini", prompt_template: str = "strict") -> RunCycleResult:
     global _progress_thread, _progress_stop
 
     consume_logs()
@@ -894,7 +1083,7 @@ def run_cycle() -> RunCycleResult:
         invocation_count = int(state.get("invocation_count", 0)) + 1
         state["invocation_count"] = invocation_count
 
-        system_prompt = load_system_prompt()
+        system_prompt = load_system_prompt(prompt_template)
         market_prompt = build_market_prompt(exchange)
         account_prompt_before, positions_before, balances_before = build_account_prompt(exchange, state)
         qualitative_info = get_cached_sentiment()
@@ -919,16 +1108,16 @@ def run_cycle() -> RunCycleResult:
 
         log_section("USER PROMPT", user_prompt)
 
-        client = DeepSeekClient(os.getenv("DEEPSEEK_API_KEY"))
+        client = get_llm_client(model_name)
         log_section(
             "LLM CALL",
-            "Submitting request to DeepSeek (model: {model})".format(model=DEEPSEEK_MODEL),
+            f"Submitting request to {model_name.upper()} model",
         )
         try:
             response = client.request(system_prompt, user_prompt)
-            log_section("LLM CALL", "DeepSeek response received successfully")
+            log_section("LLM CALL", f"{model_name.upper()} response received successfully")
         except Exception as exc:  # noqa: BLE001
-            log_section("LLM ERROR", f"DeepSeek request failed after retries: {exc}")
+            log_section("LLM ERROR", f"{model_name.upper()} request failed after retries: {exc}")
             save_state(state)
             logs = consume_logs()
             return RunCycleResult(
@@ -951,7 +1140,7 @@ def run_cycle() -> RunCycleResult:
                 run_timestamp=current_time.isoformat(),
             )
         finally:
-            log_section("LLM CALL", "DeepSeek request finished")
+            log_section("LLM CALL", "LLM request finished")
 
         log_section("LLM RAW", response.raw_text)
         log_section(

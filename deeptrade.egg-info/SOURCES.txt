@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+deeptrade.egg-info/PKG-INFO
+deeptrade.egg-info/SOURCES.txt
+deeptrade.egg-info/dependency_links.txt
+deeptrade.egg-info/requires.txt
+deeptrade.egg-info/top_level.txt
