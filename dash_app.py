@@ -16,6 +16,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 from dash import Dash, dcc, html, dash_table
 from dash.dependencies import Input, Output, State
 
@@ -41,6 +42,7 @@ from circuit_breaker import (
     get_emergency_info,
     clear_emergency,
 )
+from auditeur import run_auditeur, get_auditeur_history, log_sentinelle_alarm, append_to_daily_trade_log
 
 
 LOGGER = logging.getLogger("deeptrade.dash")
@@ -156,6 +158,8 @@ def _record_result(result) -> None:
         }
     )
     _persist_cycle_history()
+    # Feed the 48h rolling log for the Auditeur's daily report
+    append_to_daily_trade_log(asdict(result))
 
 
 def _cycle_worker(source: str) -> None:
@@ -378,6 +382,9 @@ def sentiment_then_sentinelle_job() -> None:
             macro_strategy=macro_strategy,
         )
 
+        # Log the alarm for the Auditeur's daily report
+        log_sentinelle_alarm(decision)
+
         # Step 3 — trigger emergency macro recalculation if needed
         if decision.get("trigger_recalculation"):
             LOGGER.warning(
@@ -454,10 +461,34 @@ def configure_macro_strategy_job() -> None:
         LOGGER.info("Macro strategy job scheduled (every 1h).")
 
 
+def auditeur_job() -> None:
+    """Wrapper scheduled daily at 01:05 Europe/Paris: runs the Auditeur agent."""
+    try:
+        entry = run_auditeur()
+        if entry.get("error"):
+            LOGGER.error("Auditeur job returned an error: %s", entry["error"])
+        else:
+            LOGGER.info("Auditeur job completed successfully.")
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Auditeur job failed: %s", exc)
+
+
+def configure_auditeur_job() -> None:
+    job_id = "auditeur_job"
+    if not SCHEDULER.get_job(job_id):
+        SCHEDULER.add_job(
+            auditeur_job,
+            CronTrigger(hour=1, minute=5, timezone="Europe/Paris"),
+            id=job_id,
+        )
+        LOGGER.info("Auditeur job scheduled (daily at 01:05 Europe/Paris).")
+
+
 configure_auto_cycle_job()
 configure_snapshot_job()
 configure_sentiment_job()
 configure_macro_strategy_job()
+configure_auditeur_job()
 
 
 app = Dash(__name__)
@@ -876,6 +907,19 @@ app.layout = html.Div(
                         ],
                     ),
                     dcc.Tab(
+                        label="Auditeur",
+                        value="auditeur",
+                        className="deeptrade-tab",
+                        selected_className="deeptrade-tab--active",
+                        children=[
+                            html.Div(
+                                id="auditeur-content",
+                                className="panel panel--wide",
+                                children=[html.Div("Chargement...", className="muted")],
+                            ),
+                        ],
+                    ),
+                    dcc.Tab(
                         label="Trade History",
                         value="trades",
                         className="deeptrade-tab",
@@ -1153,6 +1197,99 @@ def update_ui(n_intervals: int):
         sentiment_time,
         ai_explanation,
     )
+
+
+# ── Callback : onglet Auditeur ────────────────────────────────────────────────
+
+@app.callback(
+    Output("auditeur-content", "children"),
+    Input("refresh-interval", "n_intervals"),
+)
+def update_auditeur_tab(n_intervals):
+    """Affiche l'historique des rapports de l'Auditeur (plus récent en tête)."""
+    history = get_auditeur_history()
+
+    if not history:
+        return html.Div([
+            html.H2("Auditeur — Rapports Quotidiens", style={"marginBottom": "1.5rem"}),
+            html.Div(
+                "Aucun rapport disponible. L'Auditeur se déclenchera automatiquement à 1h05 chaque matin (heure française).",
+                className="muted",
+            ),
+        ])
+
+    cards = []
+    for entry in history:
+        ts_raw = entry.get("timestamp", "")
+        try:
+            ts = datetime.fromisoformat(ts_raw).astimezone()
+            ts_label = ts.strftime("%A %d %B %Y — %H:%M %Z")
+        except Exception:  # noqa: BLE001
+            ts_label = ts_raw
+
+        error = entry.get("error")
+        content = _strip_emoji(entry.get("content") or "")
+        reasoning = _strip_emoji(entry.get("reasoning_content") or "")
+
+        card_children = [
+            html.Div(ts_label, style={
+                "fontWeight": "700",
+                "fontSize": "1rem",
+                "marginBottom": "1rem",
+                "paddingBottom": "0.75rem",
+                "borderBottom": "1px solid rgba(255,255,255,0.08)",
+            }),
+        ]
+
+        if error:
+            card_children.append(
+                html.Div(f"Erreur : {error}", style={"color": "#fb7185", "fontSize": "0.9rem"})
+            )
+        else:
+            if reasoning:
+                card_children.append(
+                    html.Details([
+                        html.Summary(
+                            "Raisonnement DeepSeek (thinking)",
+                            style={"cursor": "pointer", "color": "rgba(255,255,255,0.45)", "fontSize": "0.85rem", "marginBottom": "0.5rem"},
+                        ),
+                        html.Pre(reasoning, className="code-block", style={
+                            "maxHeight": "350px",
+                            "overflowY": "auto",
+                            "fontSize": "0.8rem",
+                            "lineHeight": "1.65",
+                            "marginTop": "0.5rem",
+                        }),
+                    ], style={"marginBottom": "1rem"})
+                )
+
+            if content:
+                card_children.append(
+                    dcc.Markdown(content, style={"fontSize": "0.92rem", "lineHeight": "1.8"})
+                )
+            else:
+                card_children.append(
+                    html.Div("Contenu vide.", className="muted")
+                )
+
+        cards.append(
+            html.Div(card_children, style={
+                "background": "rgba(255,255,255,0.03)",
+                "border": "1px solid rgba(255,255,255,0.08)",
+                "borderRadius": "16px",
+                "padding": "1.5rem",
+                "marginBottom": "1.25rem",
+            })
+        )
+
+    return html.Div([
+        html.H2(
+            f"Auditeur — Rapports Quotidiens ({len(history)} entrée{'s' if len(history) > 1 else ''})",
+            style={"marginBottom": "1.5rem"},
+        ),
+        html.Div(cards),
+    ])
+
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=8050, debug=False)
