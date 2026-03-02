@@ -20,6 +20,14 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
+from sentiment_analyst import (
+    SENTIMENT_CACHE_PATH,
+    fetch_and_cache_sentiment,
+    get_cached_sentiment,
+)
+from macro_strategist import get_cached_macro_strategy
+from circuit_breaker import is_emergency_active, emergency_shutdown
+
 # --- Constants & Paths ---
 COINS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "DOGE/USDT"]
 INTRADAY_TIMEFRAME = "3m"
@@ -28,14 +36,14 @@ INTRADAY_BARS = 10
 LONGTERM_BARS = 10
 SYSTEM_PROMPT_FILENAME = "system_prompt.md"
 STATE_PATH = Path("bot_state.json")
-SENTIMENT_CACHE_PATH = Path("sentiment_snapshot.json")
+SENTIMENT_CACHE_PATH = SENTIMENT_CACHE_PATH  # re-exported from sentiment_analyst
 DEFAULT_SLEEP = 1.5
 MAX_DEEPSEEK_RETRIES = 3
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-DEEPSEEK_MODEL = "deepseek-reasoner"
+DEEPSEEK_MODEL = "deepseek-chat"
 
-# Give the reasoner ample room; it often spends hundreds of tokens on CoT
-DEEPSEEK_MAX_TOKENS = 8192
+# deepseek-chat is much faster and doesn't produce chain-of-thought
+DEEPSEEK_MAX_TOKENS = 2048
 DEEPSEEK_TIMEOUT = 300  # seconds
 
 load_dotenv()
@@ -292,15 +300,21 @@ def build_market_prompt(exchange: ccxt.Exchange) -> str:
 
         coin_prompt += "Intraday series (by minute, oldest → latest):\n"
         coin_prompt += f"Mid prices: {intraday_series['close'].tolist()}\n"
+        coin_prompt += f"High prices: {intraday_series['high'].tolist()}\n"
+        coin_prompt += f"Low prices: {intraday_series['low'].tolist()}\n"
         coin_prompt += "EMA indicators (20‑period): {ema}\n".format(
             ema=[round(x, 3) for x in intraday_series["EMA_20"].tolist()]
         )
-        coin_prompt += "MACD indicators: {macd}\n".format(
-            macd=[round(x, 3) for x in intraday_series["MACDh_12_26_9"].tolist()]
+        intraday_price = latest_intraday["close"]
+        coin_prompt += "MACD indicators (% of price): {macd}\n".format(
+            macd=[round(x / intraday_price * 100, 4) for x in intraday_series["MACDh_12_26_9"].tolist()]
         )
         coin_prompt += "RSI indicators (7‑Period): {rsi}\n\n".format(
             rsi=[round(x, 3) for x in intraday_series["RSI_7"].tolist()]
         )
+        coin_prompt += (
+            "Intraday ATR (3‑Period): {atr3:.4f} | Intraday ATR (14‑Period): {atr14:.4f}\n\n"
+        ).format(atr3=latest_intraday["ATRr_3"], atr14=latest_intraday["ATRr_14"])
 
         coin_prompt += "Longer‑term context (4‑hour timeframe):\n"
         coin_prompt += (
@@ -312,8 +326,9 @@ def build_market_prompt(exchange: ccxt.Exchange) -> str:
         coin_prompt += (
             "Current Volume: {volume} vs. Average Volume: {avg_volume:.3f}\n"
         ).format(volume=latest_longterm["volume"], avg_volume=longterm_df["volume"].mean())
-        coin_prompt += "MACD indicators: {macd}\n".format(
-            macd=[round(x, 3) for x in longterm_series["MACDh_12_26_9"].tolist()]
+        longterm_price = latest_longterm["close"]
+        coin_prompt += "MACD indicators (% of price): {macd}\n".format(
+            macd=[round(x / longterm_price * 100, 4) for x in longterm_series["MACDh_12_26_9"].tolist()]
         )
         coin_prompt += "RSI indicators (14‑Period): {rsi}\n\n".format(
             rsi=[round(x, 3) for x in longterm_series["RSI_14"].tolist()]
@@ -328,17 +343,23 @@ def fetch_account_position_map(exchange: ccxt.Exchange) -> Dict[str, Dict[str, A
     raw_positions = exchange.fetch_positions()
     positions: Dict[str, Dict[str, Any]] = {}
     for entry in raw_positions:
-        contracts = float(entry.get("contracts") or entry.get("info", {}).get("positionAmt") or 0)
+        info = entry.get("info", {})
+        # positionAmt from Binance raw API is signed: positive for LONG, negative for SHORT.
+        # We prefer it over ccxt's normalized `contracts` which is always positive.
+        raw_pos_amt = info.get("positionAmt")
+        if raw_pos_amt is not None:
+            contracts = float(raw_pos_amt)
+        else:
+            contracts = float(entry.get("contracts") or 0)
         if not contracts:
             continue
         symbol = entry.get("symbol")
         if not symbol:
             continue
         coin = symbol_to_coin(symbol)
-        info = entry.get("info", {})
         positions[coin] = {
             "symbol": symbol,
-            "contracts": contracts,
+            "contracts": contracts,  # signed: positive = LONG, negative = SHORT
             "entry_price": float(entry.get("entryPrice") or info.get("entryPrice") or 0),
             "mark_price": float(entry.get("markPrice") or info.get("markPrice") or 0),
             "liquidation_price": float(info.get("liquidationPrice") or 0),
@@ -412,7 +433,7 @@ def build_account_prompt(exchange: ccxt.Exchange, state: Dict[str, Any]) -> tupl
         bundle.update({
             "exit_plan": state_entry.get("exit_plan", {}),
             "confidence": state_entry.get("confidence"),
-            "risk_usd": state_entry.get("risk_usd"),
+            "risk_percentage": state_entry.get("risk_percentage"),
             "sl_oid": state_entry.get("sl_oid", -1),
             "tp_oid": state_entry.get("tp_oid", -1),
             "wait_for_fill": state_entry.get("wait_for_fill", False),
@@ -427,7 +448,7 @@ def build_account_prompt(exchange: ccxt.Exchange, state: Dict[str, Any]) -> tupl
     account_prompt += f"Current Total Return (percent): {pnl_percent:.2f}%\n"
     account_prompt += f"Current Account Value: {total_balance}\n"
     account_prompt += f"Current live positions & performance: {positions_blob}\n"
-    account_prompt += "Sharpe Ratio: 0.0\n"
+
 
     balances = {
         "total_balance": total_balance,
@@ -661,12 +682,17 @@ def process_decisions(
 
         log_section("ACTION", f"{coin} -> {signal}")
 
+        if signal in {"do_nothing", ""}:
+            continue
+
         if signal == "hold":
             state_positions.setdefault(coin, {})
+            # exit_plan is intentionally NOT updated on hold:
+            # stop-loss/take-profit are already placed on the exchange and the
+            # invalidation_condition must not be silently overwritten by the LLM.
             state_positions[coin].update({
-                "exit_plan": args.get("exit_plan", state_positions[coin].get("exit_plan")),
                 "confidence": args.get("confidence", state_positions[coin].get("confidence")),
-                "risk_usd": args.get("risk_usd", state_positions[coin].get("risk_usd")),
+                "risk_percentage": args.get("risk_percentage", state_positions[coin].get("risk_percentage")),
                 "wait_for_fill": False,
             })
             continue
@@ -698,9 +724,23 @@ def process_decisions(
                 log_section("ERROR", f"Unable to determine price for {coin}")
                 continue
 
-            stop_loss = float(args.get("exit_plan", {}).get("stop_loss"))
-            target = float(args.get("exit_plan", {}).get("profit_target"))
-            risk_usd = float(args.get("risk_usd"))
+            exit_plan = args.get("exit_plan") or {}
+            raw_stop = exit_plan.get("stop_loss")
+            raw_target = exit_plan.get("profit_target")
+            raw_risk_pct = args.get("risk_percentage")
+            if raw_stop is None or raw_target is None or raw_risk_pct is None:
+                log_section(
+                    "WARNING",
+                    f"Missing required fields for {coin} entry "
+                    f"(stop_loss={raw_stop}, profit_target={raw_target}, "
+                    f"risk_percentage={raw_risk_pct}). Skipping.",
+                )
+                continue
+            stop_loss = float(raw_stop)
+            target = float(raw_target)
+            risk_pct = float(raw_risk_pct)
+            total_balance = float(balances.get("total_balance", 0))
+            risk_usd = total_balance * risk_pct / 100.0
 
             amount = calculate_order_amount(side, price, stop_loss, risk_usd)
             amount = ensure_precision(exchange, symbol, amount)
@@ -740,7 +780,7 @@ def process_decisions(
             state_positions[coin] = {
                 "exit_plan": args.get("exit_plan", {}),
                 "confidence": args.get("confidence"),
-                "risk_usd": risk_usd,
+                "risk_percentage": risk_pct,
                 "sl_oid": bracket.get("stop_loss") or -1,
                 "tp_oid": bracket.get("take_profit") or -1,
                 "wait_for_fill": False,
@@ -781,92 +821,36 @@ def build_exchange() -> ccxt.Exchange:
     return exchange
 
 
-def fetch_and_cache_sentiment(coins: List[str] = COINS) -> None:
+
+def reconcile_state(state: Dict[str, Any], live_positions: Dict[str, Dict[str, Any]]) -> None:
     """
-    Background job that fetches qualitative data and stores it on disk.
+    Compare state positions with live exchange positions.
+    If a position in state is no longer on the exchange (e.g. stop-loss or
+    take-profit was hit automatically), remove it from state and log it.
     """
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        return
-
-    try:
-        client = genai.Client(api_key=api_key)
-
-        coin_names = ", ".join(symbol_to_coin(symbol) for symbol in coins)
-        prompt = (
-            f"Using Google Search, find the latest market-moving news for: {coin_names}. "
-            "Summarize the sentiment (Bullish/Bearish/Neutral) and top 3 headlines. "
-            "Be concise (max 200 words). Focus on the last 24 hours."
+    state_positions = state.get("positions", {})
+    closed_coins = [coin for coin in list(state_positions) if coin not in live_positions]
+    for coin in closed_coins:
+        log_section(
+            "RECONCILE",
+            f"{coin} position no longer on exchange — likely closed by SL/TP. "
+            "Removing from state.",
         )
-
-        contents = [
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=prompt)],
-            )
-        ]
-        config = types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
-        )
-
-        response = client.models.generate_content(
-            model="gemini-flash-lite-latest",
-            contents=contents,
-            config=config,
-        )
-        sentiment_text = (response.text or "").strip()
-        if not sentiment_text:
-            sentiment_text = "No sentiment content returned."
-        snapshot = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "content": sentiment_text,
-            "status": "fresh",
-        }
-
-        temp_path = SENTIMENT_CACHE_PATH.with_suffix(".tmp")
-        with temp_path.open("w", encoding="utf-8") as handle:
-            json.dump(snapshot, handle, indent=2)
-        temp_path.replace(SENTIMENT_CACHE_PATH)
-
-        log_section("SENTIMENT", "Gemini cache updated successfully.")
-    except Exception as exc:  # noqa: BLE001
-        log_section("ERROR", f"Sentiment fetch failed: {exc}")
-
-
-def get_cached_sentiment() -> str:
-    """
-    Returns formatted qualitative intelligence if we have a recent snapshot.
-    """
-    if not SENTIMENT_CACHE_PATH.exists():
-        return ""
-
-    try:
-        with SENTIMENT_CACHE_PATH.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-
-        timestamp = data.get("timestamp")
-        content = data.get("content", "")
-        if not timestamp or not content:
-            return ""
-
-        ts = datetime.fromisoformat(timestamp)
-        age_minutes = (datetime.now(timezone.utc) - ts).total_seconds() / 60
-
-        label = "Latest News"
-        if age_minutes > 60:
-            label = "Old News (Context Only)"
-
-        return (
-            f"\n### QUALITATIVE INTELLIGENCE ({label} - {int(age_minutes)}m ago)\n"
-            f"{content}\n"
-        )
-    except Exception:  # noqa: BLE001
-        return ""
+        state_positions.pop(coin, None)
 
 
 def run_cycle() -> RunCycleResult:
     global _progress_thread, _progress_stop
+
+    # ── Circuit-breaker guard ─────────────────────────────────────────────
+    if is_emergency_active():
+        from circuit_breaker import get_emergency_info
+        info = get_emergency_info() or {}
+        raise RuntimeError(
+            f"EMERGENCY MODE ACTIVE — bot halted. Reason: {info.get('reason', 'unknown')}. "
+            "Clear emergency_state.json to resume."
+        )
+    # ─────────────────────────────────────────────────────────────────────
 
     consume_logs()
     state = load_state()
@@ -896,6 +880,12 @@ def run_cycle() -> RunCycleResult:
 
         system_prompt = load_system_prompt()
         market_prompt = build_market_prompt(exchange)
+
+        # --- State reconciliation: clean up positions closed by exchange (SL/TP) ---
+        live_positions_check = fetch_account_position_map(exchange)
+        reconcile_state(state, live_positions_check)
+        # --------------------------------------------------------------------------
+
         account_prompt_before, positions_before, balances_before = build_account_prompt(exchange, state)
         qualitative_info = get_cached_sentiment()
 
@@ -910,9 +900,11 @@ def run_cycle() -> RunCycleResult:
             "predictive signals so you can discover alpha. Below that is your current "
             "account information, value, performance, positions, etc.\n\n"
         ).format(minutes=minutes_since_start, now=current_time, count=invocation_count)
+        macro_directive = get_cached_macro_strategy()
+        if macro_directive:
+            user_prompt += macro_directive + "\n"
         if qualitative_info:
             user_prompt += qualitative_info + "\n"
-        user_prompt += "ALL OF THE PRICE OR SIGNAL DATA BELOW IS ORDERED: OLDEST → NEWEST\n\n"
         user_prompt += market_prompt
         user_prompt += "\n"
         user_prompt += account_prompt_before
@@ -928,30 +920,15 @@ def run_cycle() -> RunCycleResult:
             response = client.request(system_prompt, user_prompt)
             log_section("LLM CALL", "DeepSeek response received successfully")
         except Exception as exc:  # noqa: BLE001
-            log_section("LLM ERROR", f"DeepSeek request failed after retries: {exc}")
+            reason = f"DeepSeek LLM unreachable after all retries: {exc}"
+            log_section("LLM ERROR", reason)
             save_state(state)
+            emergency_shutdown(exchange=exchange, reason=reason, state=state)
             logs = consume_logs()
-            return RunCycleResult(
-                user_prompt=user_prompt,
-                system_prompt=system_prompt,
-                llm_raw="",
-                chain_of_thought=None,
-                decisions={},
-                final_content="",
-                summary=None,
-                account_prompt_before=account_prompt_before,
-                account_prompt_after=account_prompt_before,
-                positions_before=positions_before,
-                positions_after=positions_before,
-                balances_before=balances_before,
-                balances_after=balances_before,
-                logs=logs,
-                minutes_since_start=minutes_since_start,
-                invocation_count=invocation_count,
-                run_timestamp=current_time.isoformat(),
-            )
+            raise RuntimeError(reason) from exc
         finally:
             log_section("LLM CALL", "DeepSeek request finished")
+
 
         log_section("LLM RAW", response.raw_text)
         log_section(
